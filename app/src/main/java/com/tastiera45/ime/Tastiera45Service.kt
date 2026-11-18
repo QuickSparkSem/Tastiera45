@@ -27,7 +27,6 @@ import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
@@ -177,6 +176,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListeningVoice = false
     private var cursorPadRect = Rect()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var orbXPct = 0.96f
     private var orbBottomPx = 0
@@ -186,9 +186,11 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { syncClipboard() }
 
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-        if (::keyboardView.isInitialized) {
-            applySavedConfig()
-            applyPositions()
+        mainHandler.post {
+            if (::keyboardView.isInitialized && ::rootFrame.isInitialized) {
+                applySavedConfig()
+                applyPositions()
+            }
         }
     }
 
@@ -213,6 +215,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
         try { prefs.unregisterOnSharedPreferenceChangeListener(prefListener) } catch (_: Throwable) {}
         try { clipboardManager?.removePrimaryClipChangedListener(clipListener) } catch (_: Throwable) {}
         try { speechRecognizer?.destroy() } catch (_: Throwable) {}
@@ -281,8 +284,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
         }.apply {
             setBackgroundColor(Color.TRANSPARENT)
-            addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
-                if ((r - l) != (or - ol) || (b - t) != (ob - ot)) post { applyPositions() }
+            addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
+                if ((r - l) != (oldR - oldL) || (b - t) != (oldB - oldT)) post { applyPositions() }
             }
         }
 
@@ -599,8 +602,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 cornerRadius = 7f * density
             }
             setPadding((8 * density).toInt(), (3 * density).toInt(), (8 * density).toInt(), (3 * density).toInt())
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            setOnClickListener { v ->
+                v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                 isEditingMenu = !isEditingMenu
                 rebuildMenu()
                 applyPositions()
@@ -617,8 +620,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     background = GradientDrawable().apply { setColor(Color.parseColor("#141418")); cornerRadius = 8f * density }
                     setPadding((6 * density).toInt(), (5 * density).toInt(), (4 * density).toInt(), (5 * density).toInt())
                 }
-                val toggle = {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                val toggle: (View) -> Unit = { v ->
+                    v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     MenuPrefs.toggleVisibility(prefs, entry.id)
                     rebuildMenu()
                 }
@@ -627,7 +630,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     textSize = 15f
                     setTextColor(if (entry.enabled) Color.WHITE else Color.parseColor("#6E6E73"))
                     setPadding((4 * density).toInt(), 0, (6 * density).toInt(), 0)
-                    setOnClickListener { toggle() }
+                    setOnClickListener(toggle)
                 })
                 row.addView(TextView(this).apply {
                     text = entry.title
@@ -635,7 +638,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
                     setTextColor(if (entry.enabled) Color.WHITE else Color.parseColor("#6E6E73"))
-                    setOnClickListener { toggle() }
+                    setOnClickListener(toggle)
                 }, LinearLayout.LayoutParams(0, -2, 1f))
 
                 row.addView(TextView(this).apply {
@@ -643,8 +646,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     textSize = 11.5f
                     setTextColor(if (idx > 0) Color.WHITE else Color.parseColor("#3A3A40"))
                     setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
-                    setOnClickListener {
-                        if (idx > 0) { performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); MenuPrefs.moveItem(prefs, entry.id, -1); rebuildMenu() }
+                    setOnClickListener { v ->
+                        if (idx > 0) {
+                            v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            MenuPrefs.moveItem(prefs, entry.id, -1)
+                            rebuildMenu()
+                        }
                     }
                 })
                 row.addView(TextView(this).apply {
@@ -652,8 +659,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     textSize = 11.5f
                     setTextColor(if (idx < entries.lastIndex) Color.WHITE else Color.parseColor("#3A3A40"))
                     setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
-                    setOnClickListener {
-                        if (idx < entries.lastIndex) { performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); MenuPrefs.moveItem(prefs, entry.id, +1); rebuildMenu() }
+                    setOnClickListener { v ->
+                        if (idx < entries.lastIndex) {
+                            v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            MenuPrefs.moveItem(prefs, entry.id, +1)
+                            rebuildMenu()
+                        }
                     }
                 })
                 listCol.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (3 * density).toInt() })
