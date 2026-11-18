@@ -8,7 +8,6 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Region
 import android.os.Handler
@@ -17,8 +16,8 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.hypot
-import kotlin.math.sqrt
 
 class AngledKeyboardView(
     context: Context,
@@ -32,7 +31,7 @@ class AngledKeyboardView(
         fun onSwitchIme()
         fun onMoveTextCursor(steps: Int)
         fun onSwipeWordDecoded(candidates: List<String>)
-        fun onDragFloatingKeyboard(deltaScreenY: Float)
+        fun onDragFloatingKeyboard(deltaScreenX: Float, deltaScreenY: Float)
     }
 
     data class KeyDef(
@@ -40,41 +39,39 @@ class AngledKeyboardView(
         val label: String,
         val subLabel: String = "",
         val weight: Float = 1f,
-        val isActionBlue: Boolean = false,
+        val isActionKey: Boolean = false,
         val isSpecial: Boolean = false
     )
 
-    private var isLeftSide = false
-    private var scaleFactor = 0.80f
-    private var bgOpacity = 0.92f
-    private var tiltAngleDeg = -28f
+    private var scaleFactor = 0.82f
+    private var bgOpacity = 0.94f
+    private var tiltAngleDeg = -22f
     private var letterSizeScale = 1.0f
     private var keySpacingScale = 0.25f
 
     private var isShifted = false
     private var isCapsLock = false
     private var isSymbolsMode = false
-    private var actionLabel = "🔍"
+    private var actionType = "SEARCH"
 
-    // Geometria del cerchio costruito intorno al lato e all'angolo del pollice
-    private var circleCenterX = 0f
-    private var circleCenterY = 0f
-    private var circleRadius = 0f
-    private val domeClipPath = Path()
-
-    // Matrici per inclinare tastiera e tasti lungo l'arco del pollice
+    // Geometria scolpita aderente ai tasti (nessuno spazio nero sprecato)
+    private val localContourPath = Path()
+    private val screenContourPath = Path()
+    private val dragHandleLocalRect = RectF()
     private val forwardMatrix = Matrix()
     private val inverseMatrix = Matrix()
 
     private val computedKeys = mutableListOf<Pair<KeyDef, RectF>>()
     private val letterCenters = mutableMapOf<Char, PointF>()
+    private var localClusterWidth = 600f
 
     private enum class GestureMode {
-        NONE, KEY_TAP, SWIPE_TYPING, SPACE_CURSOR, DRAG_POSITION
+        NONE, KEY_TAP, SWIPE_TYPING, SPACE_CURSOR, DRAG_POPUP
     }
 
     private var gestureMode = GestureMode.NONE
     private var activeKey: KeyDef? = null
+    private var lastRawX = 0f
     private var lastRawY = 0f
     private var downLocalX = 0f
     private var downLocalY = 0f
@@ -123,15 +120,19 @@ class AngledKeyboardView(
         }
     }
 
-    // Stili minimal AMOLED
-    private val domeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    // Tema 100% Bianco e Nero Minimal
+    private val sculptedBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         style = Paint.Style.FILL
     }
-    private val domeBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2A2A30")
+    private val sculptedBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#323236")
         style = Paint.Style.STROKE
-        strokeWidth = 2f
+        strokeWidth = 2.2f
+    }
+    private val dragPillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#8E8E93")
+        style = Paint.Style.FILL
     }
     private val mainTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -142,32 +143,36 @@ class AngledKeyboardView(
         textAlign = Paint.Align.CENTER
     }
     private val keyHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(52, 255, 255, 255)
+        color = Color.argb(55, 255, 255, 255)
         style = Paint.Style.FILL
     }
-    private val blueActionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#4B7BD6")
+    private val actionCircleFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
         style = Paint.Style.FILL
     }
-    private val swipeTrailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(185, 96, 165, 250)
+    private val vectorIconWhitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = 8f
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        pathEffect = CornerPathEffect(20f)
     }
-
-    fun setLeftHanded(left: Boolean) {
-        isLeftSide = left
-        rebuildCircularGeometry()
-        invalidate()
+    private val vectorIconBlackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
     }
-
-    fun isLeftHandedMode(): Boolean = isLeftSide
+    private val swipeTrailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(180, 255, 255, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = 7f
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        pathEffect = CornerPathEffect(18f)
+    }
 
     fun setScaleFactor(scale: Float) {
-        val clamped = scale.coerceIn(0.52f, 0.98f)
+        val clamped = scale.coerceIn(0.50f, 0.98f)
         if (abs(clamped - scaleFactor) > 0.005f) {
             scaleFactor = clamped
             requestLayout()
@@ -184,7 +189,7 @@ class AngledKeyboardView(
         val clamped = angleDeg.coerceIn(-90f, 90f)
         if (abs(clamped - tiltAngleDeg) > 0.2f) {
             tiltAngleDeg = clamped
-            rebuildCircularGeometry()
+            requestLayout()
             invalidate()
         }
     }
@@ -201,125 +206,28 @@ class AngledKeyboardView(
         val clamped = scale.coerceIn(0.0f, 1.0f)
         if (abs(clamped - keySpacingScale) > 0.005f) {
             keySpacingScale = clamped
-            rebuildCircularGeometry()
+            requestLayout()
             invalidate()
         }
     }
 
-    fun setActionIcon(symbol: String) {
-        actionLabel = symbol
-        buildKeys()
+    fun setActionType(type: String) {
+        actionType = type
         invalidate()
     }
 
-    fun appendCircleToRegion(targetRegion: Region, offsetX: Int, offsetY: Int) {
-        if (width <= 0 || height <= 0 || circleRadius <= 0f) return
-        val steps = 22
-        val topY = (circleCenterY - circleRadius).coerceAtLeast(0f)
-        val botY = (circleCenterY + circleRadius).coerceAtMost(height.toFloat())
-        val stepH = (botY - topY) / steps
-        if (stepH <= 0f) return
-
-        for (i in 0 until steps) {
-            val y1 = topY + i * stepH
-            val y2 = y1 + stepH
-            val midY = (y1 + y2) / 2f
-            val dy = abs(midY - circleCenterY)
-            if (dy < circleRadius) {
-                val halfChord = sqrt(circleRadius * circleRadius - dy * dy)
-                val x1 = (circleCenterX - halfChord).coerceIn(0f, width.toFloat()).toInt()
-                val x2 = (circleCenterX + halfChord).coerceIn(0f, width.toFloat()).toInt()
-                if (x2 > x1) {
-                    targetRegion.op(
-                        Rect(offsetX + x1, offsetY + y1.toInt(), offsetX + x2, offsetY + y2.toInt()),
-                        Region.Op.UNION
-                    )
-                }
-            }
-        }
+    fun appendContourToRegion(targetRegion: Region, offsetX: Int, offsetY: Int) {
+        if (width <= 0 || height <= 0 || screenContourPath.isEmpty) return
+        val shifted = Path(screenContourPath)
+        shifted.offset(offsetX.toFloat(), offsetY.toFloat())
+        val pathRegion = Region()
+        val clip = Region(offsetX, offsetY, offsetX + width, offsetY + height)
+        pathRegion.setPath(shifted, clip)
+        targetRegion.op(pathRegion, Region.Op.UNION)
     }
 
-    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val density = resources.displayMetrics.density
-        val screenW = resources.displayMetrics.widthPixels
-        val panelW = (screenW * scaleFactor).toInt().coerceAtLeast((215 * density).toInt())
-        val panelH = (panelW * 1.18f).toInt()
-        setMeasuredDimension(panelW, panelH)
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        rebuildCircularGeometry()
-    }
-
-    private fun rebuildCircularGeometry() {
-        if (width <= 0 || height <= 0) return
-        val w = width.toFloat()
-        val h = height.toFloat()
-
-        // Cerchio costruito intorno al lato e all'angolo del pollice
-        circleRadius = w * 0.94f
-        circleCenterX = if (isLeftSide) w * 0.02f else w * 0.98f
-        circleCenterY = h * 0.56f
-
-        domeClipPath.reset()
-        domeClipPath.addCircle(circleCenterX, circleCenterY, circleRadius, Path.Direction.CW)
-
-        val pivotX = if (isLeftSide) w * 0.46f else w * 0.54f
-        val pivotY = h * 0.56f
-        val effectiveAngle = if (isLeftSide) -tiltAngleDeg else tiltAngleDeg
-
-        forwardMatrix.reset()
-        forwardMatrix.setRotate(effectiveAngle, pivotX, pivotY)
-        forwardMatrix.invert(inverseMatrix)
-
-        buildKeys()
-    }
-
-    private fun computeTiltedRowSpan(rowMidYLocal: Float, marginPx: Float): Pair<Float, Float> {
-        val w = width.toFloat()
-        val h = height.toFloat()
-        val scanStart = -w * 0.8f
-        val scanEnd = w * 1.8f
-        val samples = 80
-        val step = (scanEnd - scanStart) / samples
-
-        var minValidX = Float.MAX_VALUE
-        var maxValidX = -Float.MAX_VALUE
-        val pt = FloatArray(2)
-
-        for (i in 0..samples) {
-            val lx = scanStart + i * step
-            pt[0] = lx
-            pt[1] = rowMidYLocal
-            forwardMatrix.mapPoints(pt)
-            val sx = pt[0]
-            val sy = pt[1]
-
-            val insideCircle = hypot(sx - circleCenterX, sy - circleCenterY) <= (circleRadius - marginPx)
-            val insideView = sx >= marginPx && sx <= (w - marginPx) && sy >= marginPx && sy <= (h - marginPx)
-            if (insideCircle && insideView) {
-                if (lx < minValidX) minValidX = lx
-                if (lx > maxValidX) maxValidX = lx
-            }
-        }
-
-        return if (maxValidX > minValidX + 40f) {
-            minValidX to maxValidX
-        } else {
-            (w * 0.14f) to (w * 0.86f)
-        }
-    }
-
-    private fun buildKeys() {
-        computedKeys.clear()
-        letterCenters.clear()
-        if (width <= 0 || height <= 0) return
-
-        val density = resources.displayMetrics.density
-        val h = height.toFloat()
-
-        val rows: List<List<KeyDef>> = if (isSymbolsMode) {
+    private fun getRowDefinitions(): List<List<KeyDef>> {
+        return if (isSymbolsMode) {
             listOf(
                 listOf(
                     KeyDef("1", "1"), KeyDef("2", "2"), KeyDef("3", "3"), KeyDef("4", "4"), KeyDef("5", "5"),
@@ -333,18 +241,17 @@ class AngledKeyboardView(
                     KeyDef("SYM_ALT", "1/2", isSpecial = true, weight = 1.3f),
                     KeyDef("!", "!"), KeyDef("@", "@"), KeyDef("#", "#"), KeyDef("€", "€"),
                     KeyDef("%", "%"), KeyDef("&", "&"), KeyDef("*", "*"),
-                    KeyDef("DEL", "⌫", isSpecial = true, weight = 1.3f)
+                    KeyDef("DEL", "", isSpecial = true, weight = 1.3f)
                 ),
                 listOf(
                     KeyDef("ABC", "ABC", isSpecial = true, weight = 1.35f),
-                    KeyDef("GLOBE", "🌐", isSpecial = true, weight = 1.15f),
+                    KeyDef("GLOBE", "", isSpecial = true, weight = 1.15f),
                     KeyDef("SPACE", "Italiano", weight = 4.4f),
                     KeyDef(",", ","),
-                    KeyDef("ENTER", actionLabel, isActionBlue = true, weight = 1.35f)
+                    KeyDef("ENTER", "", isActionKey = true, weight = 1.35f)
                 )
             )
         } else {
-            val shiftChar = if (isCapsLock) "⇪" else if (isShifted) "⬆" else "⇧"
             fun c(s: String) = if (isShifted || isCapsLock) s.uppercase() else s
             listOf(
                 listOf(
@@ -360,44 +267,109 @@ class AngledKeyboardView(
                     KeyDef(")", ")", "")
                 ),
                 listOf(
-                    KeyDef("SHIFT", shiftChar, isSpecial = true, weight = 1.35f),
+                    KeyDef("SHIFT", "", isSpecial = true, weight = 1.35f),
                     KeyDef("z", c("z"), ""), KeyDef("x", c("x"), "-"), KeyDef("c", c("c"), "'"),
                     KeyDef("v", c("v"), "\""), KeyDef("b", c("b"), ":"), KeyDef("n", c("n"), ";"),
                     KeyDef("m", c("m"), "?"),
-                    KeyDef("DEL", "⌫", isSpecial = true, weight = 1.35f)
+                    KeyDef("DEL", "", isSpecial = true, weight = 1.35f)
                 ),
                 listOf(
                     KeyDef("SYM", "!#1", isSpecial = true, weight = 1.35f),
-                    KeyDef("GLOBE", "🌐", isSpecial = true, weight = 1.15f),
+                    KeyDef("GLOBE", "", isSpecial = true, weight = 1.15f),
                     KeyDef("SPACE", "Italiano", weight = 4.4f),
                     KeyDef(".", ".", ""),
-                    KeyDef("ENTER", actionLabel, isActionBlue = true, weight = 1.35f)
+                    KeyDef("ENTER", "", isActionKey = true, weight = 1.35f)
                 )
             )
         }
+    }
 
-        // Lo spazio tra gli elementi controlla sia il gap verticale tra le righe sia il gap orizzontale tra i tasti
-        val verticalGap = (12f * density) * keySpacingScale
-        val horizontalGap = (9f * density) * keySpacingScale
-        val blockCenterY = h * 0.56f
-        val totalBlockH = (h * 0.62f) + (verticalGap * 3f)
-        val blockTop = blockCenterY - totalBlockH / 2f
-        val rowHeight = (totalBlockH - verticalGap * 3f) / rows.size
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val density = resources.displayMetrics.density
+        val screenW = resources.displayMetrics.widthPixels
+
+        localClusterWidth = (screenW * scaleFactor).coerceAtLeast(210f * density)
+        val verticalGap = (10f * density) * keySpacingScale
+        val baseRowH = localClusterWidth * 0.128f
+        val dragTabH = 22f * density
+        val pad = 5f * density
+
+        val localTotalW = localClusterWidth + pad * 2f
+        val localTotalH = dragTabH + (baseRowH * 4f) + (verticalGap * 3f) + pad * 2f
+
+        // Calcola l'ingombro esatto dopo la rotazione per evitare tagli o spazi vuoti
+        val m = Matrix()
+        m.setRotate(tiltAngleDeg, localTotalW / 2f, localTotalH / 2f)
+        val bounds = RectF(0f, 0f, localTotalW, localTotalH)
+        m.mapRect(bounds)
+
+        val measW = ceil(bounds.width() + 8f * density).toInt()
+        val measH = ceil(bounds.height() + 8f * density).toInt()
+        setMeasuredDimension(measW, measH)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        rebuildSculptedLayout()
+    }
+
+    private fun rebuildSculptedLayout() {
+        computedKeys.clear()
+        letterCenters.clear()
+        if (width <= 0 || height <= 0) return
+
+        val density = resources.displayMetrics.density
+        val screenW = resources.displayMetrics.widthPixels
+        localClusterWidth = (screenW * scaleFactor).coerceAtLeast(210f * density)
+
+        val verticalGap = (10f * density) * keySpacingScale
+        val horizontalGap = (8f * density) * keySpacingScale
+        val baseRowH = localClusterWidth * 0.128f
+        val dragTabH = 22f * density
+        val pad = 5f * density
+
+        val localTotalW = localClusterWidth + pad * 2f
+        val localTotalH = dragTabH + (baseRowH * 4f) + (verticalGap * 3f) + pad * 2f
+
+        // Matrice che ruota la tastiera scolpita e la centra nella View
+        forwardMatrix.reset()
+        forwardMatrix.postRotate(tiltAngleDeg, localTotalW / 2f, localTotalH / 2f)
+        forwardMatrix.postTranslate((width - localTotalW) / 2f, (height - localTotalH) / 2f)
+        forwardMatrix.invert(inverseMatrix)
+
+        // Linguetta superiore per trascinare il pop-up sullo schermo
+        val tabW = (localClusterWidth * 0.34f).coerceAtLeast(74f * density)
+        val tabLeft = (localTotalW - tabW) / 2f
+        val tabRight = tabLeft + tabW
+        dragHandleLocalRect.set(tabLeft, 0f, tabRight, dragTabH + pad)
+
+        // Righe scolpite che seguono la sagoma reale dei tasti senza eccessi di nero
+        val rows = getRowDefinitions()
+        val rowBoundsList = mutableListOf<RectF>()
 
         rows.forEachIndexed { rowIndex, rowKeys ->
-            val top = blockTop + rowIndex * (rowHeight + verticalGap)
-            val bottom = top + rowHeight
-            val rowMidY = (top + bottom) / 2f
+            val top = dragTabH + pad + rowIndex * (baseRowH + verticalGap)
+            val bottom = top + baseRowH
 
-            val (leftBound, rightBound) = computeTiltedRowSpan(rowMidY, 12f * density)
-            val rowSpanW = (rightBound - leftBound).coerceAtLeast(60f)
-            val row2Indent = if (rowIndex == 1) (rowSpanW / 10f) * 0.20f else 0f
+            // Leggera rastremazione ergonomica delle righe per seguire esattamente le lettere
+            val sideInset = when (rowIndex) {
+                0 -> 0f
+                1 -> localClusterWidth * 0.032f
+                2 -> localClusterWidth * 0.018f
+                else -> localClusterWidth * 0.048f
+            }
+
+            val rowLeft = pad + sideInset
+            val rowRight = localTotalW - pad - sideInset
+            val rowSpanW = (rowRight - rowLeft).coerceAtLeast(60f)
+
+            rowBoundsList.add(RectF(rowLeft - pad, top - pad * 0.6f, rowRight + pad, bottom + pad * 0.6f))
+
             val totalRowGap = horizontalGap * (rowKeys.size - 1).coerceAtLeast(0)
-            val usableRowW = (rowSpanW - row2Indent * 2f - totalRowGap).coerceAtLeast(40f)
-
+            val usableRowW = (rowSpanW - totalRowGap).coerceAtLeast(40f)
             val totalWeight = rowKeys.sumOf { it.weight.toDouble() }.toFloat()
-            var curX = leftBound + row2Indent
 
+            var curX = rowLeft
             for (k in rowKeys) {
                 val kw = (k.weight / totalWeight) * usableRowW
                 val rect = RectF(curX, top, curX + kw, bottom)
@@ -408,51 +380,110 @@ class AngledKeyboardView(
                 curX += kw + horizontalGap
             }
         }
+
+        // Costruisce il contorno poligonale aderente alla linguetta e alle 4 righe
+        localContourPath.reset()
+        if (rowBoundsList.size == 4) {
+            val r0 = rowBoundsList[0]
+            val r1 = rowBoundsList[1]
+            val r2 = rowBoundsList[2]
+            val r3 = rowBoundsList[3]
+
+            localContourPath.moveTo(dragHandleLocalRect.left, dragHandleLocalRect.top)
+            localContourPath.lineTo(dragHandleLocalRect.right, dragHandleLocalRect.top)
+            localContourPath.lineTo(dragHandleLocalRect.right, r0.top)
+
+            // Lato destro aderente alle 4 righe
+            localContourPath.lineTo(r0.right, r0.top)
+            localContourPath.lineTo(r0.right, r0.bottom)
+            localContourPath.lineTo(r1.right, r1.top)
+            localContourPath.lineTo(r1.right, r1.bottom)
+            localContourPath.lineTo(r2.right, r2.top)
+            localContourPath.lineTo(r2.right, r2.bottom)
+            localContourPath.lineTo(r3.right, r3.top)
+            localContourPath.lineTo(r3.right, r3.bottom)
+
+            // Base e lato sinistro aderente alle 4 righe
+            localContourPath.lineTo(r3.left, r3.bottom)
+            localContourPath.lineTo(r3.left, r3.top)
+            localContourPath.lineTo(r2.left, r2.bottom)
+            localContourPath.lineTo(r2.left, r2.top)
+            localContourPath.lineTo(r1.left, r1.bottom)
+            localContourPath.lineTo(r1.left, r1.top)
+            localContourPath.lineTo(r0.left, r0.bottom)
+            localContourPath.lineTo(r0.left, r0.top)
+
+            localContourPath.lineTo(dragHandleLocalRect.left, r0.top)
+            localContourPath.close()
+        }
+
+        screenContourPath.reset()
+        localContourPath.transform(forwardMatrix, screenContourPath)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val density = resources.displayMetrics.density
         val alphaInt = (bgOpacity * 255).toInt().coerceIn(30, 255)
+        val cornerFx = CornerPathEffect(12f * density)
 
-        // 1. Disco tondo AMOLED con la trasparenza scelta
-        domeBgPaint.color = Color.argb(alphaInt, 0, 0, 0)
-        domeBorderPaint.color = Color.argb((alphaInt * 0.75f).toInt().coerceAtLeast(50), 48, 50, 58)
+        sculptedBgPaint.color = Color.argb(alphaInt, 0, 0, 0)
+        sculptedBgPaint.pathEffect = cornerFx
+        sculptedBorderPaint.color = Color.argb((alphaInt * 0.85f).toInt().coerceAtLeast(60), 54, 54, 60)
+        sculptedBorderPaint.pathEffect = cornerFx
 
-        canvas.save()
-        canvas.clipPath(domeClipPath)
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), domeBgPaint)
-
-        // 2. Ruota il canvas per inclinare fisicamente tastiera e tasti
         canvas.save()
         canvas.concat(forwardMatrix)
 
-        val keyUnitW = (width / 10.5f) * letterSizeScale
+        // 1. Disegna lo sfondo scolpito aderente ai tasti (zero nero in eccesso)
+        canvas.drawPath(localContourPath, sculptedBgPaint)
+        canvas.drawPath(localContourPath, sculptedBorderPaint)
+
+        // 2. Disegna la barra minimal per trascinare il pop-up sullo schermo
+        val pillW = dragHandleLocalRect.width() * 0.46f
+        val pillH = 3.5f * density
+        val pillLeft = dragHandleLocalRect.centerX() - pillW / 2f
+        val pillTop = (dragHandleLocalRect.top + 8f * density)
+        canvas.drawRoundRect(
+            pillLeft, pillTop, pillLeft + pillW, pillTop + pillH,
+            pillH, pillH, dragPillPaint
+        )
+
+        // 3. Disegna tutti i tasti in tema Bianco e Nero minimal
+        val keyUnitW = (localClusterWidth / 10f) * letterSizeScale
         subTextPaint.textSize = (keyUnitW * 0.23f).coerceAtLeast(7f * density)
 
         for ((key, rect) in computedKeys) {
             if (activeKey == key) {
-                canvas.drawCircle(rect.centerX(), rect.centerY(), minOf(rect.width(), rect.height()) * 0.46f, keyHighlightPaint)
+                canvas.drawCircle(
+                    rect.centerX(),
+                    rect.centerY(),
+                    minOf(rect.width(), rect.height()) * 0.45f,
+                    keyHighlightPaint
+                )
             }
 
-            if (key.isActionBlue) {
-                val r = minOf(rect.width(), rect.height()) * 0.36f
-                canvas.drawCircle(rect.centerX(), rect.centerY(), r, blueActionPaint)
-            }
+            when {
+                key.isActionKey -> drawMonochromeActionKey(canvas, rect, density)
+                key.code == "SHIFT" -> drawMonochromeShiftKey(canvas, rect, density)
+                key.code == "DEL" -> drawMonochromeBackspaceKey(canvas, rect, density)
+                key.code == "GLOBE" -> drawMonochromeGlobeKey(canvas, rect, density)
+                else -> {
+                    mainTextPaint.textSize = when {
+                        key.code == "SPACE" -> (keyUnitW * 0.34f).coerceAtLeast(9.5f * density)
+                        key.label.length >= 3 -> (keyUnitW * 0.32f).coerceAtLeast(9f * density)
+                        else -> (keyUnitW * 0.49f).coerceAtLeast(12f * density)
+                    }
+                    mainTextPaint.color = if (key.code == "SPACE") Color.parseColor("#E5E5EA") else Color.WHITE
+                    val textY = rect.centerY() - (mainTextPaint.descent() + mainTextPaint.ascent()) / 2f
+                    canvas.drawText(key.label, rect.centerX(), textY, mainTextPaint)
 
-            mainTextPaint.textSize = when {
-                key.code == "SPACE" -> (keyUnitW * 0.34f).coerceAtLeast(9.5f * density)
-                key.label.length >= 3 -> (keyUnitW * 0.32f).coerceAtLeast(9f * density)
-                else -> (keyUnitW * 0.49f).coerceAtLeast(12f * density)
-            }
-            mainTextPaint.color = if (key.code == "SPACE") Color.parseColor("#E5E5EA") else Color.WHITE
-            val textY = rect.centerY() - (mainTextPaint.descent() + mainTextPaint.ascent()) / 2f
-            canvas.drawText(key.label, rect.centerX(), textY, mainTextPaint)
-
-            if (key.subLabel.isNotEmpty()) {
-                val subX = rect.right - rect.width() * 0.16f
-                val subY = rect.top + rect.height() * 0.30f
-                canvas.drawText(key.subLabel, subX, subY, subTextPaint)
+                    if (key.subLabel.isNotEmpty()) {
+                        val subX = rect.right - rect.width() * 0.16f
+                        val subY = rect.top + rect.height() * 0.30f
+                        canvas.drawText(key.subLabel, subX, subY, subTextPaint)
+                    }
+                }
             }
         }
 
@@ -461,27 +492,148 @@ class AngledKeyboardView(
         }
 
         canvas.restore()
-        canvas.restore()
+    }
 
-        // 3. Bordo circolare sottile attorno al disco
-        canvas.drawCircle(circleCenterX, circleCenterY, circleRadius - 1.5f, domeBorderPaint)
+    private fun drawMonochromeActionKey(canvas: Canvas, rect: RectF, density: Float) {
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+        val r = minOf(rect.width(), rect.height()) * 0.35f
+
+        // Cerchio bianco puro minimal con icona nera ad alto contrasto (zero blu)
+        canvas.drawCircle(cx, cy, r, actionCircleFillPaint)
+        vectorIconBlackPaint.strokeWidth = 2.0f * density
+        vectorIconBlackPaint.style = Paint.Style.STROKE
+
+        val s = r * 0.48f
+        when (actionType) {
+            "SEARCH" -> {
+                val lensR = s * 0.68f
+                val lensCx = cx - s * 0.16f
+                val lensCy = cy - s * 0.16f
+                canvas.drawCircle(lensCx, lensCy, lensR, vectorIconBlackPaint)
+                canvas.drawLine(
+                    lensCx + lensR * 0.70f,
+                    lensCy + lensR * 0.70f,
+                    cx + s * 0.85f,
+                    cy + s * 0.85f,
+                    vectorIconBlackPaint
+                )
+            }
+            "SEND" -> {
+                val p = Path().apply {
+                    moveTo(cx - s * 0.65f, cy - s * 0.55f)
+                    lineTo(cx + s * 0.75f, cy)
+                    lineTo(cx - s * 0.65f, cy + s * 0.55f)
+                    lineTo(cx - s * 0.30f, cy)
+                    close()
+                }
+                canvas.drawPath(p, vectorIconBlackPaint)
+            }
+            "DONE" -> {
+                val p = Path().apply {
+                    moveTo(cx - s * 0.65f, cy + s * 0.05f)
+                    lineTo(cx - s * 0.15f, cy + s * 0.55f)
+                    lineTo(cx + s * 0.70f, cy - s * 0.45f)
+                }
+                canvas.drawPath(p, vectorIconBlackPaint)
+            }
+            "NEXT" -> {
+                canvas.drawLine(cx - s * 0.65f, cy, cx + s * 0.45f, cy, vectorIconBlackPaint)
+                canvas.drawLine(cx + s * 0.05f, cy - s * 0.45f, cx + s * 0.50f, cy, vectorIconBlackPaint)
+                canvas.drawLine(cx + s * 0.05f, cy + s * 0.45f, cx + s * 0.50f, cy, vectorIconBlackPaint)
+                canvas.drawLine(cx + s * 0.70f, cy - s * 0.45f, cx + s * 0.70f, cy + s * 0.45f, vectorIconBlackPaint)
+            }
+            else -> {
+                // Invio classico minimal (↵)
+                val p = Path().apply {
+                    moveTo(cx + s * 0.55f, cy - s * 0.45f)
+                    lineTo(cx + s * 0.55f, cy + s * 0.20f)
+                    lineTo(cx - s * 0.55f, cy + s * 0.20f)
+                }
+                canvas.drawPath(p, vectorIconBlackPaint)
+                canvas.drawLine(cx - s * 0.20f, cy - s * 0.15f, cx - s * 0.60f, cy + s * 0.20f, vectorIconBlackPaint)
+                canvas.drawLine(cx - s * 0.20f, cy + s * 0.55f, cx - s * 0.60f, cy + s * 0.20f, vectorIconBlackPaint)
+            }
+        }
+    }
+
+    private fun drawMonochromeShiftKey(canvas: Canvas, rect: RectF, density: Float) {
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+        val s = minOf(rect.width(), rect.height()) * 0.24f
+
+        val arrow = Path().apply {
+            moveTo(cx, cy - s)
+            lineTo(cx + s * 0.95f, cy + s * 0.05f)
+            lineTo(cx + s * 0.42f, cy + s * 0.05f)
+            lineTo(cx + s * 0.42f, cy + s * 0.85f)
+            lineTo(cx - s * 0.42f, cy + s * 0.85f)
+            lineTo(cx - s * 0.42f, cy + s * 0.05f)
+            lineTo(cx - s * 0.95f, cy + s * 0.05f)
+            close()
+        }
+
+        vectorIconWhitePaint.strokeWidth = 1.8f * density
+        vectorIconWhitePaint.style = if (isShifted || isCapsLock) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
+        canvas.drawPath(arrow, vectorIconWhitePaint)
+
+        if (isCapsLock) {
+            canvas.drawLine(cx - s * 0.55f, cy + s * 1.18f, cx + s * 0.55f, cy + s * 1.18f, vectorIconWhitePaint)
+        }
+    }
+
+    private fun drawMonochromeBackspaceKey(canvas: Canvas, rect: RectF, density: Float) {
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+        val s = minOf(rect.width(), rect.height()) * 0.25f
+
+        vectorIconWhitePaint.style = Paint.Style.STROKE
+        vectorIconWhitePaint.strokeWidth = 1.8f * density
+
+        val box = Path().apply {
+            moveTo(cx - s * 1.1f, cy)
+            lineTo(cx - s * 0.45f, cy - s * 0.72f)
+            lineTo(cx + s * 0.95f, cy - s * 0.72f)
+            lineTo(cx + s * 0.95f, cy + s * 0.72f)
+            lineTo(cx - s * 0.45f, cy + s * 0.72f)
+            close()
+        }
+        canvas.drawPath(box, vectorIconWhitePaint)
+        val xOff = s * 0.24f
+        val xSize = s * 0.34f
+        canvas.drawLine(cx + xOff - xSize, cy - xSize, cx + xOff + xSize, cy + xSize, vectorIconWhitePaint)
+        canvas.drawLine(cx + xOff + xSize, cy - xSize, cx + xOff - xSize, cy + xSize, vectorIconWhitePaint)
+    }
+
+    private fun drawMonochromeGlobeKey(canvas: Canvas, rect: RectF, density: Float) {
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+        val r = minOf(rect.width(), rect.height()) * 0.24f
+
+        vectorIconWhitePaint.style = Paint.Style.STROKE
+        vectorIconWhitePaint.strokeWidth = 1.6f * density
+        canvas.drawCircle(cx, cy, r, vectorIconWhitePaint)
+        canvas.drawLine(cx - r, cy, cx + r, cy, vectorIconWhitePaint)
+        canvas.drawOval(cx - r * 0.46f, cy - r, cx + r * 0.46f, cy + r, vectorIconWhitePaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val density = resources.displayMetrics.density
-        val insideCircle = hypot(event.x - circleCenterX, event.y - circleCenterY) <= (circleRadius + 4f * density)
-
-        if (event.actionMasked == MotionEvent.ACTION_DOWN && !insideCircle) {
-            return false
-        }
-
         val pts = floatArrayOf(event.x, event.y)
         inverseMatrix.mapPoints(pts)
         val lx = pts[0]
         val ly = pts[1]
 
+        // Ignora i tocchi fuori dalla sagoma scolpita
+        val expandedDragHandle = RectF(dragHandleLocalRect).apply { inset(-8f * density, -8f * density) }
+        val inKey = computedKeys.any { it.second.contains(lx, ly) }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN && !inKey && !expandedDragHandle.contains(lx, ly)) {
+            return false
+        }
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                lastRawX = event.rawX
                 lastRawY = event.rawY
                 downLocalX = lx
                 downLocalY = ly
@@ -489,6 +641,14 @@ class AngledKeyboardView(
                 swipePathPoints.clear()
                 swipeDrawPath.reset()
 
+                // 1. Linguetta superiore -> trascina la tastiera pop-up in qualsiasi punto dello schermo
+                if (expandedDragHandle.contains(lx, ly)) {
+                    gestureMode = GestureMode.DRAG_POPUP
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    return true
+                }
+
+                // 2. Tasto
                 val hit = computedKeys.firstOrNull { it.second.contains(lx, ly) }
                 if (hit != null) {
                     activeKey = hit.first
@@ -508,18 +668,18 @@ class AngledKeyboardView(
                         swipeDrawPath.moveTo(lx, ly)
                     }
                     invalidate()
-                } else {
-                    gestureMode = GestureMode.DRAG_POSITION
                 }
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
                 when (gestureMode) {
-                    GestureMode.DRAG_POSITION -> {
+                    GestureMode.DRAG_POPUP -> {
+                        val dx = event.rawX - lastRawX
                         val dy = event.rawY - lastRawY
+                        lastRawX = event.rawX
                         lastRawY = event.rawY
-                        listener.onDragFloatingKeyboard(dy)
+                        listener.onDragFloatingKeyboard(dx, dy)
                     }
 
                     GestureMode.KEY_TAP -> {
@@ -564,7 +724,7 @@ class AngledKeyboardView(
                 handler.removeCallbacks(repeatDeleteRunnable)
 
                 if (gestureMode == GestureMode.SWIPE_TYPING) {
-                    val candidates = swipeDecoder.decode(swipePathPoints, letterCenters, width / 10.5f)
+                    val candidates = swipeDecoder.decode(swipePathPoints, letterCenters, localClusterWidth / 10f)
                     if (candidates.isNotEmpty()) {
                         var word = candidates.first()
                         if (isCapsLock) word = word.uppercase()
@@ -586,7 +746,7 @@ class AngledKeyboardView(
                 gestureMode = GestureMode.NONE
                 swipePathPoints.clear()
                 swipeDrawPath.reset()
-                buildKeys()
+                rebuildSculptedLayout()
                 invalidate()
                 return true
             }
