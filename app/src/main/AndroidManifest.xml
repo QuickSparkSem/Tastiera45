@@ -12,8 +12,17 @@
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.CREATE_SHORTCUT" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
         <package android:name="com.google.android.apps.translate" />
         <package android:name="com.samsung.android.app.interpreter" />
+        <package android:name="com.samsung.android.honeyboard" />
+        <package android:name="com.samsung.android.smartsuggestions" />
     </queries>
 
     <application
