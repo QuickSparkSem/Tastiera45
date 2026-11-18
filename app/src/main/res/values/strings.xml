@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Tastiera 45°</string>
+    <string name="ime_name">Tastiera 45° AMOLED</string>
+    <string name="cursor_service_name">Tastiera 45° - Remote Cursor</string>
+    <string name="accessibility_desc">Permette al Remote Cursor della tastiera di eseguire tap e selezioni in qualsiasi punto dello schermo con una mano sola.</string>
+</resources>
