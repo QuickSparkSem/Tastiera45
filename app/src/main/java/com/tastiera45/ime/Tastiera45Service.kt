@@ -190,6 +190,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             if (::keyboardView.isInitialized && ::rootFrame.isInitialized) {
                 applySavedConfig()
                 applyPositions()
+                rootFrame.post { applyPositions() }
             }
         }
     }
@@ -259,6 +260,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             scale = MenuPrefs.getFloat(prefs, "${p}scale", if (isArc) 0.86f else 0.82f),
             opacity = MenuPrefs.getFloat(prefs, "${p}alpha", 0.0f),
             tiltDeg = MenuPrefs.getFloat(prefs, "${p}tilt", 0f),
+            arcRotDeg = if (isArc) MenuPrefs.getFloat(prefs, "arc_rotation", 0f) else 0f,
             letterScale = MenuPrefs.getFloat(prefs, "${p}letter_size", 1.0f),
             spacingScale = MenuPrefs.getFloat(prefs, "${p}key_spacing", 0.25f),
             shStrength = MenuPrefs.getFloat(prefs, "${p}shadow_strength", 0.92f),
@@ -579,7 +581,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             isIncognito = isIncognito()
         )
 
-        // Intestazione con tasto EDIT (✎) nell'angolo in alto a destra
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
