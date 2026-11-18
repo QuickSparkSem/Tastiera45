@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.CornerPathEffect
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
@@ -16,6 +15,8 @@ import android.view.MotionEvent
 import android.view.View
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.sqrt
 
 class AngledKeyboardView(
     context: Context,
@@ -35,6 +36,8 @@ class AngledKeyboardView(
         fun onToggleHandSide()
         fun onMoveTextCursor(steps: Int)
         fun onSwipeWordDecoded(candidates: List<String>)
+        fun onDragFloatingKeyboard(deltaScreenY: Float)
+        fun onResizeScaleChanged(newScale: Float)
     }
 
     data class KeyDef(
@@ -46,34 +49,39 @@ class AngledKeyboardView(
         val isSpecial: Boolean = false
     )
 
-    private var isLeftHanded = false
+    private var isLeftSide = false
+    private var scaleFactor = 0.74f
     private var isShifted = false
     private var isCapsLock = false
     private var isSymbolsMode = false
     private var actionLabel = "🔍"
 
-    // Matrici di trasformazione per ruotare esattamente a 45 gradi nell'angolo
-    private val forwardMatrix = Matrix()
-    private val inverseMatrix = Matrix()
-    private var localW = 900f
-    private var localH = 540f
+    // Geometria della cupola circolare laterale
+    private var headerHeight = 0f
+    private var circleCenterX = 0f
+    private var circleCenterY = 0f
+    private var circleRadius = 0f
+    private val domeClipPath = Path()
+
+    // Maniglie sulla barra superiore della tastiera mobile
+    private val dragMoveRect = RectF()
+    private val resizeHandleRect = RectF()
+    private val flipSideRect = RectF()
+    private val mouseEdgeRect = RectF()
 
     private val computedKeys = mutableListOf<Pair<KeyDef, RectF>>()
     private val letterCenters = mutableMapOf<Char, PointF>()
 
-    // Pulsanti rapidi nell'angolo libero creato dall'inclinazione a 45°
-    private val cornerMicRect = RectF()
-    private val cornerHandRect = RectF()
-    private val cornerTransRect = RectF()
-    private val topEdgeBarRect = RectF()
+    private enum class GestureMode {
+        NONE, KEY_TAP, SWIPE_TYPING, SPACE_CURSOR, EDGE_MOUSE, DRAG_MOVE, DRAG_RESIZE
+    }
 
-    // Gestione gesti: Swipe parola, Cursore spazio, Attivazione Remote Cursor
-    private enum class GestureMode { NONE, KEY_TAP, SWIPE_TYPING, SPACE_CURSOR, EDGE_MOUSE }
     private var gestureMode = GestureMode.NONE
     private var activeKey: KeyDef? = null
-    private var activeKeyRect: RectF? = null
-    private var downScreenX = 0f
-    private var downScreenY = 0f
+    private var downRawX = 0f
+    private var downRawY = 0f
+    private var lastRawX = 0f
+    private var lastRawY = 0f
     private var downLocalX = 0f
     private var downLocalY = 0f
     private var lastCursorDragX = 0f
@@ -120,9 +128,28 @@ class AngledKeyboardView(
         }
     }
 
-    // Stili visivi fedeli al primo allegato (AMOLED nero puro, lettere bianche, sub-label grigie)
-    private val bgPaint = Paint().apply { color = Color.BLACK }
-
+    // Stili fedeli al primo allegato (AMOLED nero puro, lettere bianche, simboli secondari grigi)
+    private val domeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.FILL
+    }
+    private val domeBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#2C2C32")
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+    }
+    private val headerPillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#111215")
+        style = Paint.Style.FILL
+    }
+    private val headerChipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#1D1E23")
+        style = Paint.Style.FILL
+    }
+    private val headerIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#E5E5EA")
+        textAlign = Paint.Align.CENTER
+    }
     private val mainTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
@@ -132,136 +159,116 @@ class AngledKeyboardView(
         textAlign = Paint.Align.CENTER
     }
     private val keyHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(48, 255, 255, 255)
+        color = Color.argb(52, 255, 255, 255)
         style = Paint.Style.FILL
     }
     private val blueActionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#4B7BD6")
         style = Paint.Style.FILL
     }
-    private val cornerChipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#141416")
-        style = Paint.Style.FILL
-    }
-    private val cornerChipStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2C2C30")
-        style = Paint.Style.STROKE
-        strokeWidth = 2f
-    }
-    private val topEdgeBarPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#121316")
-        style = Paint.Style.FILL
-    }
-    private val handlePillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#555861")
-        style = Paint.Style.FILL
-    }
     private val swipeTrailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(190, 96, 165, 250)
+        color = Color.argb(195, 96, 165, 250)
         style = Paint.Style.STROKE
-        strokeWidth = 10f
+        strokeWidth = 9f
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        pathEffect = CornerPathEffect(24f)
+        pathEffect = CornerPathEffect(22f)
     }
 
     fun setLeftHanded(left: Boolean) {
-        isLeftHanded = left
-        rebuildGeometry()
+        isLeftSide = left
+        requestLayout()
         invalidate()
     }
 
-    fun isLeftHandedMode(): Boolean = isLeftHanded
+    fun isLeftHandedMode(): Boolean = isLeftSide
+
+    fun setScaleFactor(scale: Float) {
+        val clamped = scale.coerceIn(0.50f, 0.96f)
+        if (abs(clamped - scaleFactor) > 0.005f) {
+            scaleFactor = clamped
+            requestLayout()
+            invalidate()
+        }
+    }
+
+    fun getScaleFactor(): Float = scaleFactor
 
     fun setActionIcon(symbol: String) {
         actionLabel = symbol
-        rebuildGeometry()
+        buildKeys()
         invalidate()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val w = MeasureSpec.getSize(widthMeasureSpec)
         val density = resources.displayMetrics.density
-        // Altezza calibrata affinché l'intera tastiera ruotata a 45° entri comoda in basso
-        val h = (w * 0.94f + 36f * density).toInt()
-        setMeasuredDimension(w, h)
+        val screenW = resources.displayMetrics.widthPixels
+        val panelW = (screenW * scaleFactor).toInt().coerceAtLeast((210 * density).toInt())
+        val domeH = (panelW * 0.94f).toInt()
+        val headH = (38 * density).toInt()
+        setMeasuredDimension(panelW, domeH + headH)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        rebuildGeometry()
+        rebuildCircularGeometry()
     }
 
-    private fun rebuildGeometry() {
+    private fun rebuildCircularGeometry() {
         if (width <= 0 || height <= 0) return
         val density = resources.displayMetrics.density
-        val topStripH = 34f * density
-        topEdgeBarRect.set(0f, 0f, width.toFloat(), topStripH)
+        headerHeight = 38f * density
+        val domeH = height - headerHeight
 
-        val availW = width.toFloat()
-        val availH = height - topStripH
-
-        // Dimensioni nel sistema locale prima della rotazione a 45 gradi
-        localW = availW * 0.80f
-        localH = availW * 0.50f
-
-        forwardMatrix.reset()
-        val angle = if (isLeftHanded) 45f else -45f
-        forwardMatrix.postRotate(angle, localW / 2f, localH / 2f)
-
-        // Calcola i vertici ruotati per ancorare esattamente nell'angolo inferiore scelto
-        val corners = floatArrayOf(
-            0f, 0f,
-            localW, 0f,
-            localW, localH,
-            0f, localH
-        )
-        forwardMatrix.mapPoints(corners)
-        var minX = Float.MAX_VALUE
-        var maxX = -Float.MAX_VALUE
-        var minY = Float.MAX_VALUE
-        var maxY = -Float.MAX_VALUE
-        for (i in 0 until 4) {
-            val cx = corners[i * 2]
-            val cy = corners[i * 2 + 1]
-            if (cx < minX) minX = cx
-            if (cx > maxX) maxX = cx
-            if (cy < minY) minY = cy
-            if (cy > maxY) maxY = cy
-        }
-
-        val pad = 10f * density
-        val targetBottom = height - pad
-        val dx = if (isLeftHanded) {
-            pad - minX
+        // Configurazione maniglie sulla barra superiore del modulo mobile
+        val pad = 4f * density
+        val chipW = (width - pad * 5f) / 4f
+        val top = pad
+        val bottom = headerHeight - pad
+        if (isLeftSide) {
+            flipSideRect.set(pad, top, pad + chipW, bottom)
+            dragMoveRect.set(pad * 2 + chipW, top, pad * 2 + chipW * 2, bottom)
+            mouseEdgeRect.set(pad * 3 + chipW * 2, top, pad * 3 + chipW * 3, bottom)
+            resizeHandleRect.set(pad * 4 + chipW * 3, top, width - pad, bottom)
         } else {
-            (availW - pad) - maxX
+            resizeHandleRect.set(pad, top, pad + chipW, bottom)
+            mouseEdgeRect.set(pad * 2 + chipW, top, pad * 2 + chipW * 2, bottom)
+            dragMoveRect.set(pad * 3 + chipW * 2, top, pad * 3 + chipW * 3, bottom)
+            flipSideRect.set(pad * 4 + chipW * 3, top, width - pad, bottom)
         }
-        val dy = targetBottom - maxY
-        forwardMatrix.postTranslate(dx, dy)
-        forwardMatrix.invert(inverseMatrix)
 
-        // Posiziona i 3 tasti ergonomici nell'angolo vuoto lasciato dal taglio a 45°
-        val chipSize = 46f * density
-        val chipMargin = 14f * density
-        if (isLeftHanded) {
-            val rx = width - chipMargin - chipSize
-            cornerMicRect.set(rx, height - chipMargin - chipSize, rx + chipSize, height - chipMargin)
-            cornerHandRect.set(rx - chipSize - 10f * density, height - chipMargin - chipSize, rx - 10f * density, height - chipMargin)
-            cornerTransRect.set(rx, height - chipMargin - chipSize * 2 - 10f * density, rx + chipSize, height - chipMargin - chipSize - 10f * density)
-        } else {
-            val lx = chipMargin
-            cornerMicRect.set(lx, height - chipMargin - chipSize, lx + chipSize, height - chipMargin)
-            cornerHandRect.set(lx + chipSize + 10f * density, height - chipMargin - chipSize, lx + chipSize * 2 + 10f * density, height - chipMargin)
-            cornerTransRect.set(lx, height - chipMargin - chipSize * 2 - 10f * density, lx + chipSize, height - chipMargin - chipSize - 10f * density)
-        }
+        // Cerchio che emerge dal lato scelto dello schermo
+        circleCenterY = headerHeight + domeH / 2f
+        circleRadius = max(width * 0.98f, domeH * 0.56f)
+        circleCenterX = if (isLeftSide) 0f else width.toFloat()
+
+        domeClipPath.reset()
+        domeClipPath.addCircle(circleCenterX, circleCenterY, circleRadius, Path.Direction.CW)
 
         buildKeys()
+    }
+
+    private fun chordBoundsAtY(y: Float, insetMargin: Float): Pair<Float, Float> {
+        val dy = abs(y - circleCenterY)
+        val rEff = (circleRadius - insetMargin).coerceAtLeast(10f)
+        val halfChord = if (dy < rEff) sqrt((rEff * rEff) - (dy * dy)) else rEff * 0.5f
+        val chordWidth = halfChord.coerceAtMost(width - insetMargin * 2f)
+        return if (isLeftSide) {
+            insetMargin to (insetMargin + chordWidth)
+        } else {
+            (width - insetMargin - chordWidth) to (width - insetMargin)
+        }
     }
 
     private fun buildKeys() {
         computedKeys.clear()
         letterCenters.clear()
+        if (width <= 0 || height <= 0) return
+
+        val density = resources.displayMetrics.density
+        val domeTop = headerHeight + 4f * density
+        val domeBottom = height - 6f * density
+        val usableH = (domeBottom - domeTop).coerceAtLeast(40f)
 
         val rows: List<List<KeyDef>> = if (isSymbolsMode) {
             listOf(
@@ -283,7 +290,7 @@ class AngledKeyboardView(
                     KeyDef("ABC", "ABC", isSpecial = true, weight = 1.35f),
                     KeyDef("GLOBE", "🌐", isSpecial = true, weight = 1.1f),
                     KeyDef("CLIP", "📋", isSpecial = true, weight = 1.1f),
-                    KeyDef("SPACE", "Italiano", weight = 3.8f),
+                    KeyDef("SPACE", "Italiano", weight = 3.6f),
                     KeyDef(",", ","),
                     KeyDef("ENTER", actionLabel, isActionBlue = true, weight = 1.35f)
                 )
@@ -315,24 +322,30 @@ class AngledKeyboardView(
                     KeyDef("SYM", "!#1", isSpecial = true, weight = 1.35f),
                     KeyDef("GLOBE", "🌐", isSpecial = true, weight = 1.1f),
                     KeyDef("CLIP", "📋", isSpecial = true, weight = 1.1f),
-                    KeyDef("SPACE", "Italiano", weight = 3.8f),
+                    KeyDef("SPACE", "Italiano", weight = 3.6f),
                     KeyDef(".", ".", ""),
                     KeyDef("ENTER", actionLabel, isActionBlue = true, weight = 1.35f)
                 )
             )
         }
 
-        val rowHeight = localH / rows.size
+        val rowHeight = usableH / rows.size
         rows.forEachIndexed { rowIndex, rowKeys ->
-            val totalWeight = rowKeys.sumOf { it.weight.toDouble() }.toFloat()
-            val horizontalMargin = if (rowIndex == 1) (localW / 10f) * 0.25f else 0f
-            val usableW = localW - horizontalMargin * 2f
-            var curX = horizontalMargin
-            val top = rowIndex * rowHeight
+            val top = domeTop + rowIndex * rowHeight
             val bottom = top + rowHeight
+            val rowMidY = (top + bottom) / 2f
+
+            // Calcola la larghezza disponibile lungo la corda del cerchio per questa riga
+            val (leftBound, rightBound) = chordBoundsAtY(rowMidY, 6f * density)
+            val rowSpanW = (rightBound - leftBound).coerceAtLeast(80f)
+            val row2Indent = if (rowIndex == 1) (rowSpanW / 10f) * 0.22f else 0f
+            val usableRowW = rowSpanW - row2Indent * 2f
+
+            val totalWeight = rowKeys.sumOf { it.weight.toDouble() }.toFloat()
+            var curX = leftBound + row2Indent
 
             for (k in rowKeys) {
-                val kw = (k.weight / totalWeight) * usableW
+                val kw = (k.weight / totalWeight) * usableRowW
                 val rect = RectF(curX, top, curX + kw, bottom)
                 computedKeys.add(k to rect)
                 if (k.code.length == 1 && k.code[0] in 'a'..'z') {
@@ -347,36 +360,27 @@ class AngledKeyboardView(
         super.onDraw(canvas)
         val density = resources.displayMetrics.density
 
-        // Sfondo nero puro AMOLED
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
+        // 1. Barra superiore di controllo (Ridimensiona, Mouse, Sposta su/giù, Cambia lato)
+        val headerRect = RectF(0f, 0f, width.toFloat(), headerHeight)
+        canvas.drawRoundRect(headerRect, 14f * density, 14f * density, headerPillPaint)
+        canvas.drawRoundRect(headerRect, 14f * density, 14f * density, domeBorderPaint)
 
-        // Barra superiore sottile per attivare il Remote Cursor scorrendo verso l'alto
-        canvas.drawRect(topEdgeBarRect, topEdgeBarPaint)
-        val pillW = 46f * density
-        val pillH = 4f * density
-        val pillLeft = (width - pillW) / 2f
-        val pillTop = (topEdgeBarRect.height() - pillH) / 2f
-        canvas.drawRoundRect(
-            pillLeft, pillTop, pillLeft + pillW, pillTop + pillH,
-            pillH, pillH, handlePillPaint
-        )
+        drawHeaderChip(canvas, resizeHandleRect, "⤢", density)
+        drawHeaderChip(canvas, mouseEdgeRect, "🖱️", density)
+        drawHeaderChip(canvas, dragMoveRect, "⋮⋮", density)
+        drawHeaderChip(canvas, flipSideRect, if (isLeftSide) "→" else "←", density)
 
-        // Pulsanti ergonomici nell'angolo libero (Microfono, Inversione Mano 45°, Traduttore)
-        drawCornerChip(canvas, cornerMicRect, "🎤", density)
-        drawCornerChip(canvas, cornerHandRect, if (isLeftHanded) "45°→" else "←45°", density)
-        drawCornerChip(canvas, cornerTransRect, "A文", density)
-
-        // Disegna la tastiera inclinata a 45 gradi
+        // 2. Cupola circolare AMOLED nero puro che esce dal lato
         canvas.save()
-        canvas.concat(forwardMatrix)
+        canvas.clipPath(domeClipPath)
+        canvas.drawRect(0f, headerHeight, width.toFloat(), height.toFloat(), domeBgPaint)
 
-        val keyUnitW = localW / 10f
-        mainTextPaint.textSize = keyUnitW * 0.48f
-        subTextPaint.textSize = keyUnitW * 0.23f
+        val keyUnitW = width / 10f
+        subTextPaint.textSize = (keyUnitW * 0.24f).coerceAtLeast(8f * density)
 
         for ((key, rect) in computedKeys) {
             if (activeKey == key) {
-                canvas.drawCircle(rect.centerX(), rect.centerY(), rect.height() * 0.42f, keyHighlightPaint)
+                canvas.drawCircle(rect.centerX(), rect.centerY(), minOf(rect.width(), rect.height()) * 0.44f, keyHighlightPaint)
             }
 
             if (key.isActionBlue) {
@@ -384,92 +388,82 @@ class AngledKeyboardView(
                 canvas.drawCircle(rect.centerX(), rect.centerY(), r, blueActionPaint)
             }
 
-            // Etichetta principale
             mainTextPaint.textSize = when {
-                key.code == "SPACE" -> keyUnitW * 0.34f
-                key.label.length >= 3 -> keyUnitW * 0.32f
-                else -> keyUnitW * 0.50f
+                key.code == "SPACE" -> (keyUnitW * 0.35f).coerceAtLeast(11f * density)
+                key.label.length >= 3 -> (keyUnitW * 0.33f).coerceAtLeast(10f * density)
+                else -> (keyUnitW * 0.50f).coerceAtLeast(14f * density)
             }
             mainTextPaint.color = if (key.code == "SPACE") Color.parseColor("#E5E5EA") else Color.WHITE
             val textY = rect.centerY() - (mainTextPaint.descent() + mainTextPaint.ascent()) / 2f
             canvas.drawText(key.label, rect.centerX(), textY, mainTextPaint)
 
-            // Simbolo secondario in grigio in alto a destra (identico all'allegato 1)
             if (key.subLabel.isNotEmpty()) {
-                val subX = rect.right - rect.width() * 0.20f
+                val subX = rect.right - rect.width() * 0.18f
                 val subY = rect.top + rect.height() * 0.30f
                 canvas.drawText(key.subLabel, subX, subY, subTextPaint)
             }
         }
 
-        // Scia luminosa dello swipe-to-type
         if (gestureMode == GestureMode.SWIPE_TYPING && swipePathPoints.size > 1) {
             canvas.drawPath(swipeDrawPath, swipeTrailPaint)
         }
 
         canvas.restore()
+
+        // Bordo circolare sottile attorno alla cupola
+        canvas.drawCircle(circleCenterX, circleCenterY, circleRadius - 1.5f, domeBorderPaint)
     }
 
-    private fun drawCornerChip(canvas: Canvas, rect: RectF, icon: String, density: Float) {
-        val r = 14f * density
-        canvas.drawRoundRect(rect, r, r, cornerChipPaint)
-        canvas.drawRoundRect(rect, r, r, cornerChipStroke)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#D1D1D6")
-            textAlign = Paint.Align.CENTER
-            textSize = 15f * density
-        }
-        val y = rect.centerY() - (p.descent() + p.ascent()) / 2f
-        canvas.drawText(icon, rect.centerX(), y, p)
+    private fun drawHeaderChip(canvas: Canvas, rect: RectF, label: String, density: Float) {
+        val r = 10f * density
+        canvas.drawRoundRect(rect, r, r, headerChipPaint)
+        headerIconPaint.textSize = 13.5f * density
+        val y = rect.centerY() - (headerIconPaint.descent() + headerIconPaint.ascent()) / 2f
+        canvas.drawText(label, rect.centerX(), y, headerIconPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val density = resources.displayMetrics.density
-        val pts = floatArrayOf(event.x, event.y)
-        inverseMatrix.mapPoints(pts)
-        val lx = pts[0]
-        val ly = pts[1]
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                downScreenX = event.x
-                downScreenY = event.y
-                downLocalX = lx
-                downLocalY = ly
+                downRawX = event.rawX
+                downRawY = event.rawY
+                lastRawX = event.rawX
+                lastRawY = event.rawY
+                downLocalX = event.x
+                downLocalY = event.y
                 longPressTriggered = false
                 swipePathPoints.clear()
                 swipeDrawPath.reset()
 
-                // 1. Tocco sulla barra superiore -> pronto per attivare il Remote Cursor
-                if (topEdgeBarRect.contains(event.x, event.y)) {
-                    gestureMode = GestureMode.EDGE_MOUSE
-                    return true
-                }
-
-                // 2. Pulsanti rapidi nell'angolo
-                if (cornerMicRect.contains(event.x, event.y)) {
+                // Controllo maniglie sulla barra superiore della tastiera mobile
+                if (resizeHandleRect.contains(event.x, event.y)) {
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    listener.onStartVoiceDictation()
+                    gestureMode = GestureMode.DRAG_RESIZE
                     return true
                 }
-                if (cornerHandRect.contains(event.x, event.y)) {
+                if (dragMoveRect.contains(event.x, event.y)) {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    gestureMode = GestureMode.DRAG_MOVE
+                    return true
+                }
+                if (flipSideRect.contains(event.x, event.y)) {
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     listener.onToggleHandSide()
                     return true
                 }
-                if (cornerTransRect.contains(event.x, event.y)) {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    listener.onOpenTranslate()
+                if (mouseEdgeRect.contains(event.x, event.y)) {
+                    gestureMode = GestureMode.EDGE_MOUSE
                     return true
                 }
 
-                // 3. Ricerca tasto toccato nel sistema ruotato a 45°
-                val hit = computedKeys.firstOrNull { it.second.contains(lx, ly) }
+                // Controllo tocco sui tasti dentro la cupola circolare
+                val hit = computedKeys.firstOrNull { it.second.contains(event.x, event.y) }
                 if (hit != null) {
                     activeKey = hit.first
-                    activeKeyRect = hit.second
                     gestureMode = GestureMode.KEY_TAP
-                    lastCursorDragX = lx
+                    lastCursorDragX = event.x
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 
                     if (hit.first.code == "DEL") {
@@ -480,8 +474,8 @@ class AngledKeyboardView(
                     }
 
                     if (!isSymbolsMode && hit.first.code.length == 1 && hit.first.code[0] in 'a'..'z') {
-                        swipePathPoints.add(PointF(lx, ly))
-                        swipeDrawPath.moveTo(lx, ly)
+                        swipePathPoints.add(PointF(event.x, event.y))
+                        swipeDrawPath.moveTo(event.x, event.y)
                     }
                     invalidate()
                 }
@@ -490,11 +484,27 @@ class AngledKeyboardView(
 
             MotionEvent.ACTION_MOVE -> {
                 when (gestureMode) {
+                    GestureMode.DRAG_MOVE -> {
+                        val dy = event.rawY - lastRawY
+                        lastRawY = event.rawY
+                        listener.onDragFloatingKeyboard(dy)
+                    }
+
+                    GestureMode.DRAG_RESIZE -> {
+                        val screenW = resources.displayMetrics.widthPixels.toFloat()
+                        val dx = event.rawX - lastRawX
+                        lastRawX = event.rawX
+                        // Trascinando verso il centro dello schermo ingrandisce; verso il bordo rimpicciolisce
+                        val signedDelta = if (isLeftSide) dx else -dx
+                        val newScale = (scaleFactor + (signedDelta / screenW)).coerceIn(0.50f, 0.96f)
+                        setScaleFactor(newScale)
+                        listener.onResizeScaleChanged(newScale)
+                    }
+
                     GestureMode.EDGE_MOUSE -> {
-                        val dy = downScreenY - event.y
-                        val dx = abs(event.x - downScreenX)
-                        // Scorrendo dalla barra superiore si attiva il mouse Remote Cursor
-                        if (dy > 14f * density || dx > 22f * density) {
+                        val dy = downRawY - event.rawY
+                        val dx = abs(event.rawX - downRawX)
+                        if (dy > 12f * density || dx > 16f * density) {
                             gestureMode = GestureMode.NONE
                             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                             listener.onActivateRemoteCursor()
@@ -502,23 +512,23 @@ class AngledKeyboardView(
                     }
 
                     GestureMode.KEY_TAP -> {
-                        val moveLocal = hypot(lx - downLocalX, ly - downLocalY)
-                        if (activeKey?.code == "SPACE" && abs(lx - downLocalX) > 16f * density) {
+                        val moveLocal = hypot(event.x - downLocalX, event.y - downLocalY)
+                        if (activeKey?.code == "SPACE" && abs(event.x - downLocalX) > 14f * density) {
                             handler.removeCallbacks(longPressRunnable)
                             gestureMode = GestureMode.SPACE_CURSOR
-                            lastCursorDragX = lx
-                        } else if (!isSymbolsMode && activeKey != null && !activeKey!!.isSpecial && moveLocal > 26f * density) {
+                            lastCursorDragX = event.x
+                        } else if (!isSymbolsMode && activeKey != null && !activeKey!!.isSpecial && moveLocal > 22f * density) {
                             handler.removeCallbacks(longPressRunnable)
                             gestureMode = GestureMode.SWIPE_TYPING
-                            swipePathPoints.add(PointF(lx, ly))
-                            swipeDrawPath.lineTo(lx, ly)
+                            swipePathPoints.add(PointF(event.x, event.y))
+                            swipeDrawPath.lineTo(event.x, event.y)
                             invalidate()
                         }
                     }
 
                     GestureMode.SPACE_CURSOR -> {
-                        val stepSize = 18f * density
-                        val deltaX = lx - lastCursorDragX
+                        val stepSize = 15f * density
+                        val deltaX = event.x - lastCursorDragX
                         if (abs(deltaX) >= stepSize) {
                             val steps = (deltaX / stepSize).toInt()
                             lastCursorDragX += steps * stepSize
@@ -528,8 +538,8 @@ class AngledKeyboardView(
                     }
 
                     GestureMode.SWIPE_TYPING -> {
-                        swipePathPoints.add(PointF(lx, ly))
-                        swipeDrawPath.lineTo(lx, ly)
+                        swipePathPoints.add(PointF(event.x, event.y))
+                        swipeDrawPath.lineTo(event.x, event.y)
                         invalidate()
                     }
 
@@ -543,10 +553,9 @@ class AngledKeyboardView(
                 handler.removeCallbacks(repeatDeleteRunnable)
 
                 if (gestureMode == GestureMode.EDGE_MOUSE) {
-                    // Anche un tap veloce sulla barra superiore apre comodamente il Remote Cursor
                     listener.onActivateRemoteCursor()
                 } else if (gestureMode == GestureMode.SWIPE_TYPING) {
-                    val candidates = swipeDecoder.decode(swipePathPoints, letterCenters, localW / 10f)
+                    val candidates = swipeDecoder.decode(swipePathPoints, letterCenters, width / 10f)
                     if (candidates.isNotEmpty()) {
                         var word = candidates.first()
                         if (isCapsLock) word = word.uppercase()
@@ -565,7 +574,6 @@ class AngledKeyboardView(
                 }
 
                 activeKey = null
-                activeKeyRect = null
                 gestureMode = GestureMode.NONE
                 swipePathPoints.clear()
                 swipeDrawPath.reset()
@@ -579,7 +587,7 @@ class AngledKeyboardView(
 
     private fun handleSingleKeyTap(key: KeyDef) {
         when (key.code) {
-            "DEL" -> { /* già gestito in ACTION_DOWN */ }
+            "DEL" -> { /* gestito in ACTION_DOWN */ }
             "SHIFT" -> {
                 val now = System.currentTimeMillis()
                 if (now - lastShiftTapTime < 320L) {
