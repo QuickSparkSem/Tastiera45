@@ -28,16 +28,13 @@ class AngledKeyboardView(
         fun onDeleteChar()
         fun onEnterPressed()
         fun onSwitchIme()
-        fun onOpenClipboard()
-        fun onStartVoiceDictation()
-        fun onOpenVoicePicker()
-        fun onOpenTranslate()
-        fun onActivateRemoteCursor()
-        fun onToggleHandSide()
         fun onMoveTextCursor(steps: Int)
         fun onSwipeWordDecoded(candidates: List<String>)
         fun onDragFloatingKeyboard(deltaScreenY: Float)
-        fun onResizeScaleChanged(newScale: Float)
+        fun onShowExtraPanel()
+        fun onToggleExtraPanel()
+        fun onUpdateExtraPanelHover(rawX: Float, rawY: Float)
+        fun onReleaseExtraPanelAt(rawX: Float, rawY: Float)
     }
 
     data class KeyDef(
@@ -51,48 +48,55 @@ class AngledKeyboardView(
 
     private var isLeftSide = false
     private var scaleFactor = 0.74f
+    private var bgOpacity = 0.92f
+    private var incognitoHighlight = false
     private var isShifted = false
     private var isCapsLock = false
     private var isSymbolsMode = false
     private var actionLabel = "🔍"
 
-    // Geometria della cupola circolare laterale
-    private var headerHeight = 0f
+    // Geometria cupola circolare e bottone unico funzioni extra
+    private var topMarginPx = 0f
     private var circleCenterX = 0f
     private var circleCenterY = 0f
     private var circleRadius = 0f
     private val domeClipPath = Path()
-
-    // Maniglie sulla barra superiore della tastiera mobile
-    private val dragMoveRect = RectF()
-    private val resizeHandleRect = RectF()
-    private val flipSideRect = RectF()
-    private val mouseEdgeRect = RectF()
+    private val hubButtonRect = RectF()
 
     private val computedKeys = mutableListOf<Pair<KeyDef, RectF>>()
     private val letterCenters = mutableMapOf<Char, PointF>()
 
     private enum class GestureMode {
-        NONE, KEY_TAP, SWIPE_TYPING, SPACE_CURSOR, EDGE_MOUSE, DRAG_MOVE, DRAG_RESIZE
+        NONE, KEY_TAP, SWIPE_TYPING, SPACE_CURSOR, HUB_MENU, DRAG_POSITION
     }
 
     private var gestureMode = GestureMode.NONE
     private var activeKey: KeyDef? = null
     private var downRawX = 0f
     private var downRawY = 0f
-    private var lastRawX = 0f
     private var lastRawY = 0f
     private var downLocalX = 0f
     private var downLocalY = 0f
     private var lastCursorDragX = 0f
     private var lastShiftTapTime = 0L
     private var longPressTriggered = false
+    private var hubHoldTriggered = false
+    private var hubDragMoved = false
 
     private val swipePathPoints = mutableListOf<PointF>()
     private val swipeDrawPath = Path()
     private val swipeDecoder = SwipeDecoder(context)
 
     private val handler = Handler(Looper.getMainLooper())
+
+    private val hubHoldRunnable = Runnable {
+        if (gestureMode == GestureMode.HUB_MENU) {
+            hubHoldTriggered = true
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            listener.onShowExtraPanel()
+        }
+    }
+
     private val repeatDeleteRunnable = object : Runnable {
         override fun run() {
             if (activeKey?.code == "DEL") {
@@ -128,7 +132,7 @@ class AngledKeyboardView(
         }
     }
 
-    // Stili fedeli al primo allegato (AMOLED nero puro, lettere bianche, simboli secondari grigi)
+    // Stili fedeli all'allegato 1 (AMOLED nero, lettere bianche, simboli secondari grigi)
     private val domeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         style = Paint.Style.FILL
@@ -138,16 +142,17 @@ class AngledKeyboardView(
         style = Paint.Style.STROKE
         strokeWidth = 3f
     }
-    private val headerPillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#111215")
+    private val hubBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#18191E")
         style = Paint.Style.FILL
     }
-    private val headerChipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#1D1E23")
-        style = Paint.Style.FILL
+    private val hubBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#3A3D46")
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
     }
-    private val headerIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#E5E5EA")
+    private val hubIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
         textAlign = Paint.Align.CENTER
     }
     private val mainTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -159,7 +164,7 @@ class AngledKeyboardView(
         textAlign = Paint.Align.CENTER
     }
     private val keyHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(52, 255, 255, 255)
+        color = Color.argb(54, 255, 255, 255)
         style = Paint.Style.FILL
     }
     private val blueActionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -192,7 +197,15 @@ class AngledKeyboardView(
         }
     }
 
-    fun getScaleFactor(): Float = scaleFactor
+    fun setOpacity(opacity: Float) {
+        bgOpacity = opacity.coerceIn(0.15f, 1.0f)
+        invalidate()
+    }
+
+    fun setIncognitoVisual(active: Boolean) {
+        incognitoHighlight = active
+        invalidate()
+    }
 
     fun setActionIcon(symbol: String) {
         actionLabel = symbol
@@ -203,10 +216,10 @@ class AngledKeyboardView(
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val density = resources.displayMetrics.density
         val screenW = resources.displayMetrics.widthPixels
-        val panelW = (screenW * scaleFactor).toInt().coerceAtLeast((210 * density).toInt())
-        val domeH = (panelW * 0.94f).toInt()
-        val headH = (38 * density).toInt()
-        setMeasuredDimension(panelW, domeH + headH)
+        val panelW = (screenW * scaleFactor).toInt().coerceAtLeast((200 * density).toInt())
+        val topSpace = (26 * density).toInt()
+        val domeH = (panelW * 0.95f).toInt()
+        setMeasuredDimension(panelW, domeH + topSpace)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -217,28 +230,20 @@ class AngledKeyboardView(
     private fun rebuildCircularGeometry() {
         if (width <= 0 || height <= 0) return
         val density = resources.displayMetrics.density
-        headerHeight = 38f * density
-        val domeH = height - headerHeight
+        topMarginPx = 26f * density
+        val domeH = height - topMarginPx
 
-        // Configurazione maniglie sulla barra superiore del modulo mobile
+        // Posiziona l'unico bottone extra (✦) sul bordo superiore interno della cupola
+        val hubSize = 42f * density
         val pad = 4f * density
-        val chipW = (width - pad * 5f) / 4f
-        val top = pad
-        val bottom = headerHeight - pad
         if (isLeftSide) {
-            flipSideRect.set(pad, top, pad + chipW, bottom)
-            dragMoveRect.set(pad * 2 + chipW, top, pad * 2 + chipW * 2, bottom)
-            mouseEdgeRect.set(pad * 3 + chipW * 2, top, pad * 3 + chipW * 3, bottom)
-            resizeHandleRect.set(pad * 4 + chipW * 3, top, width - pad, bottom)
+            hubButtonRect.set(width - pad - hubSize, pad, width - pad, pad + hubSize)
         } else {
-            resizeHandleRect.set(pad, top, pad + chipW, bottom)
-            mouseEdgeRect.set(pad * 2 + chipW, top, pad * 2 + chipW * 2, bottom)
-            dragMoveRect.set(pad * 3 + chipW * 2, top, pad * 3 + chipW * 3, bottom)
-            flipSideRect.set(pad * 4 + chipW * 3, top, width - pad, bottom)
+            hubButtonRect.set(pad, pad, pad + hubSize, pad + hubSize)
         }
 
         // Cerchio che emerge dal lato scelto dello schermo
-        circleCenterY = headerHeight + domeH / 2f
+        circleCenterY = topMarginPx + domeH / 2f
         circleRadius = max(width * 0.98f, domeH * 0.56f)
         circleCenterX = if (isLeftSide) 0f else width.toFloat()
 
@@ -266,7 +271,7 @@ class AngledKeyboardView(
         if (width <= 0 || height <= 0) return
 
         val density = resources.displayMetrics.density
-        val domeTop = headerHeight + 4f * density
+        val domeTop = topMarginPx + 6f * density
         val domeBottom = height - 6f * density
         val usableH = (domeBottom - domeTop).coerceAtLeast(40f)
 
@@ -288,9 +293,8 @@ class AngledKeyboardView(
                 ),
                 listOf(
                     KeyDef("ABC", "ABC", isSpecial = true, weight = 1.35f),
-                    KeyDef("GLOBE", "🌐", isSpecial = true, weight = 1.1f),
-                    KeyDef("CLIP", "📋", isSpecial = true, weight = 1.1f),
-                    KeyDef("SPACE", "Italiano", weight = 3.6f),
+                    KeyDef("GLOBE", "🌐", isSpecial = true, weight = 1.15f),
+                    KeyDef("SPACE", "Italiano", weight = 4.5f),
                     KeyDef(",", ","),
                     KeyDef("ENTER", actionLabel, isActionBlue = true, weight = 1.35f)
                 )
@@ -320,9 +324,8 @@ class AngledKeyboardView(
                 ),
                 listOf(
                     KeyDef("SYM", "!#1", isSpecial = true, weight = 1.35f),
-                    KeyDef("GLOBE", "🌐", isSpecial = true, weight = 1.1f),
-                    KeyDef("CLIP", "📋", isSpecial = true, weight = 1.1f),
-                    KeyDef("SPACE", "Italiano", weight = 3.6f),
+                    KeyDef("GLOBE", "🌐", isSpecial = true, weight = 1.15f),
+                    KeyDef("SPACE", "Italiano", weight = 4.5f),
                     KeyDef(".", ".", ""),
                     KeyDef("ENTER", actionLabel, isActionBlue = true, weight = 1.35f)
                 )
@@ -335,7 +338,6 @@ class AngledKeyboardView(
             val bottom = top + rowHeight
             val rowMidY = (top + bottom) / 2f
 
-            // Calcola la larghezza disponibile lungo la corda del cerchio per questa riga
             val (leftBound, rightBound) = chordBoundsAtY(rowMidY, 6f * density)
             val rowSpanW = (rightBound - leftBound).coerceAtLeast(80f)
             val row2Indent = if (rowIndex == 1) (rowSpanW / 10f) * 0.22f else 0f
@@ -359,21 +361,15 @@ class AngledKeyboardView(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val density = resources.displayMetrics.density
+        val alphaInt = (bgOpacity * 255).toInt().coerceIn(30, 255)
 
-        // 1. Barra superiore di controllo (Ridimensiona, Mouse, Sposta su/giù, Cambia lato)
-        val headerRect = RectF(0f, 0f, width.toFloat(), headerHeight)
-        canvas.drawRoundRect(headerRect, 14f * density, 14f * density, headerPillPaint)
-        canvas.drawRoundRect(headerRect, 14f * density, 14f * density, domeBorderPaint)
+        // Cupola circolare AMOLED con la trasparenza scelta nelle impostazioni
+        domeBgPaint.color = Color.argb(alphaInt, 0, 0, 0)
+        domeBorderPaint.color = Color.argb((alphaInt * 0.85f).toInt().coerceAtLeast(60), 54, 56, 64)
 
-        drawHeaderChip(canvas, resizeHandleRect, "⤢", density)
-        drawHeaderChip(canvas, mouseEdgeRect, "🖱️", density)
-        drawHeaderChip(canvas, dragMoveRect, "⋮⋮", density)
-        drawHeaderChip(canvas, flipSideRect, if (isLeftSide) "→" else "←", density)
-
-        // 2. Cupola circolare AMOLED nero puro che esce dal lato
         canvas.save()
         canvas.clipPath(domeClipPath)
-        canvas.drawRect(0f, headerHeight, width.toFloat(), height.toFloat(), domeBgPaint)
+        canvas.drawRect(0f, topMarginPx, width.toFloat(), height.toFloat(), domeBgPaint)
 
         val keyUnitW = width / 10f
         subTextPaint.textSize = (keyUnitW * 0.24f).coerceAtLeast(8f * density)
@@ -412,14 +408,22 @@ class AngledKeyboardView(
 
         // Bordo circolare sottile attorno alla cupola
         canvas.drawCircle(circleCenterX, circleCenterY, circleRadius - 1.5f, domeBorderPaint)
-    }
 
-    private fun drawHeaderChip(canvas: Canvas, rect: RectF, label: String, density: Float) {
-        val r = 10f * density
-        canvas.drawRoundRect(rect, r, r, headerChipPaint)
-        headerIconPaint.textSize = 13.5f * density
-        val y = rect.centerY() - (headerIconPaint.descent() + headerIconPaint.ascent()) / 2f
-        canvas.drawText(label, rect.centerX(), y, headerIconPaint)
+        // Bottone unico funzioni extra (✦)
+        hubBgPaint.color = Color.argb(alphaInt.coerceAtLeast(190), 22, 23, 28)
+        hubBorderPaint.color = if (incognitoHighlight) {
+            Color.parseColor("#60A5FA")
+        } else {
+            Color.parseColor("#3E414B")
+        }
+        val hubRadius = hubButtonRect.width() / 2f
+        canvas.drawCircle(hubButtonRect.centerX(), hubButtonRect.centerY(), hubRadius, hubBgPaint)
+        canvas.drawCircle(hubButtonRect.centerX(), hubButtonRect.centerY(), hubRadius, hubBorderPaint)
+
+        hubIconPaint.textSize = 18f * density
+        hubIconPaint.color = if (incognitoHighlight) Color.parseColor("#60A5FA") else Color.WHITE
+        val hubY = hubButtonRect.centerY() - (hubIconPaint.descent() + hubIconPaint.ascent()) / 2f
+        canvas.drawText("✦", hubButtonRect.centerX(), hubY, hubIconPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -429,36 +433,25 @@ class AngledKeyboardView(
             MotionEvent.ACTION_DOWN -> {
                 downRawX = event.rawX
                 downRawY = event.rawY
-                lastRawX = event.rawX
                 lastRawY = event.rawY
                 downLocalX = event.x
                 downLocalY = event.y
                 longPressTriggered = false
+                hubHoldTriggered = false
+                hubDragMoved = false
                 swipePathPoints.clear()
                 swipeDrawPath.reset()
 
-                // Controllo maniglie sulla barra superiore della tastiera mobile
-                if (resizeHandleRect.contains(event.x, event.y)) {
+                // 1. Tocco sull'unico bottone delle funzioni extra (✦)
+                val expandedHub = RectF(hubButtonRect).apply { inset(-6f * density, -6f * density) }
+                if (expandedHub.contains(event.x, event.y)) {
+                    gestureMode = GestureMode.HUB_MENU
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    gestureMode = GestureMode.DRAG_RESIZE
-                    return true
-                }
-                if (dragMoveRect.contains(event.x, event.y)) {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    gestureMode = GestureMode.DRAG_MOVE
-                    return true
-                }
-                if (flipSideRect.contains(event.x, event.y)) {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    listener.onToggleHandSide()
-                    return true
-                }
-                if (mouseEdgeRect.contains(event.x, event.y)) {
-                    gestureMode = GestureMode.EDGE_MOUSE
+                    handler.postDelayed(hubHoldRunnable, 170L)
                     return true
                 }
 
-                // Controllo tocco sui tasti dentro la cupola circolare
+                // 2. Ricerca tasto toccato dentro la cupola circolare
                 val hit = computedKeys.firstOrNull { it.second.contains(event.x, event.y) }
                 if (hit != null) {
                     activeKey = hit.first
@@ -478,37 +471,31 @@ class AngledKeyboardView(
                         swipeDrawPath.moveTo(event.x, event.y)
                     }
                     invalidate()
+                } else {
+                    // Tocco sul bordo libero della cupola -> permette di trascinare su/giù la tastiera
+                    gestureMode = GestureMode.DRAG_POSITION
                 }
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
                 when (gestureMode) {
-                    GestureMode.DRAG_MOVE -> {
+                    GestureMode.HUB_MENU -> {
+                        val moved = hypot(event.rawX - downRawX, event.rawY - downRawY)
+                        if (moved > 10f * density && !hubDragMoved) {
+                            hubDragMoved = true
+                            handler.removeCallbacks(hubHoldRunnable)
+                            listener.onShowExtraPanel()
+                        }
+                        if (hubDragMoved || hubHoldTriggered) {
+                            listener.onUpdateExtraPanelHover(event.rawX, event.rawY)
+                        }
+                    }
+
+                    GestureMode.DRAG_POSITION -> {
                         val dy = event.rawY - lastRawY
                         lastRawY = event.rawY
                         listener.onDragFloatingKeyboard(dy)
-                    }
-
-                    GestureMode.DRAG_RESIZE -> {
-                        val screenW = resources.displayMetrics.widthPixels.toFloat()
-                        val dx = event.rawX - lastRawX
-                        lastRawX = event.rawX
-                        // Trascinando verso il centro dello schermo ingrandisce; verso il bordo rimpicciolisce
-                        val signedDelta = if (isLeftSide) dx else -dx
-                        val newScale = (scaleFactor + (signedDelta / screenW)).coerceIn(0.50f, 0.96f)
-                        setScaleFactor(newScale)
-                        listener.onResizeScaleChanged(newScale)
-                    }
-
-                    GestureMode.EDGE_MOUSE -> {
-                        val dy = downRawY - event.rawY
-                        val dx = abs(event.rawX - downRawX)
-                        if (dy > 12f * density || dx > 16f * density) {
-                            gestureMode = GestureMode.NONE
-                            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                            listener.onActivateRemoteCursor()
-                        }
                     }
 
                     GestureMode.KEY_TAP -> {
@@ -549,11 +536,18 @@ class AngledKeyboardView(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                handler.removeCallbacks(hubHoldRunnable)
                 handler.removeCallbacks(longPressRunnable)
                 handler.removeCallbacks(repeatDeleteRunnable)
 
-                if (gestureMode == GestureMode.EDGE_MOUSE) {
-                    listener.onActivateRemoteCursor()
+                if (gestureMode == GestureMode.HUB_MENU) {
+                    if (hubDragMoved || hubHoldTriggered) {
+                        // Ha trascinato o tenuto premuto -> avvia l'opzione sotto il dito e chiude
+                        listener.onReleaseExtraPanelAt(event.rawX, event.rawY)
+                    } else {
+                        // Tap veloce -> apre/chiude il pannello così può cliccare sulle voci
+                        listener.onToggleExtraPanel()
+                    }
                 } else if (gestureMode == GestureMode.SWIPE_TYPING) {
                     val candidates = swipeDecoder.decode(swipePathPoints, letterCenters, width / 10f)
                     if (candidates.isNotEmpty()) {
@@ -607,7 +601,6 @@ class AngledKeyboardView(
             "ABC" -> isSymbolsMode = false
             "SYM_ALT" -> isSymbolsMode = false
             "GLOBE" -> listener.onSwitchIme()
-            "CLIP" -> listener.onOpenClipboard()
             "SPACE" -> listener.onCommitText(" ")
             "ENTER" -> listener.onEnterPressed()
             else -> {
