@@ -15,6 +15,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.text.InputType
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -29,13 +30,21 @@ import android.widget.Toast
 
 class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActionListener {
 
+    private enum class ExtraAction {
+        MOUSE, VOICE, CLIPBOARD, TRANSLATE, INCOGNITO, FLIP_SIDE, SETTINGS
+    }
+
     private lateinit var rootFrame: FrameLayout
     private lateinit var floatingDockWrapper: LinearLayout
-    private lateinit var topBarContainer: LinearLayout
+    private lateinit var extraPanelContainer: LinearLayout
+    private lateinit var swipeBarContainer: LinearLayout
     private lateinit var keyboardView: AngledKeyboardView
     private lateinit var clipboardPanel: LinearLayout
     private lateinit var clipboardListLayout: LinearLayout
     private lateinit var remoteCursorOverlay: RemoteCursorOverlay
+
+    private val extraOptionViews = mutableListOf<Pair<ExtraAction, TextView>>()
+    private var hoveredExtraAction: ExtraAction? = null
 
     private var isAutoIncognito = false
     private var isManualIncognito = false
@@ -78,7 +87,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
         val isLeftSide = prefs.getBoolean("left_handed", false)
         val savedScale = prefs.getFloat("kb_scale", 0.74f)
-        // Sollevata dal fondo di default così esce dal lato come tastiera mobile
+        val savedOpacity = prefs.getFloat("kb_alpha", 0.92f)
         bottomOffsetPx = prefs.getInt("kb_bottom_offset", (72 * density).toInt())
 
         rootFrame = FrameLayout(this).apply {
@@ -87,45 +96,78 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
         floatingDockWrapper = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.BLACK)
-                cornerRadius = 22f * density
-                setStroke((1.5f * density).toInt(), Color.parseColor("#2C2C32"))
-            }
-            setPadding((2 * density).toInt(), (4 * density).toInt(), (2 * density).toInt(), (4 * density).toInt())
+            setBackgroundColor(Color.TRANSPARENT)
         }
 
-        // Barra compatta superiore del modulo mobile: Incognito, Voce, Appunti, Traduci, Swipe
-        topBarContainer = LinearLayout(this).apply {
+        // 1. Pannello a comparsa con tutte le funzioni extra (attivato dal bottone unico ✦)
+        extraPanelContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#E6101115"))
+                cornerRadius = 18f * density
+                setStroke((1.5f * density).toInt(), Color.parseColor("#32353F"))
+            }
+            setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
+        }
+        val panelParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = (6 * density).toInt()
+        }
+        floatingDockWrapper.addView(extraPanelContainer, panelParams)
+
+        // 2. Barra suggerimenti Swipe / stato Voce (appare solo quando serve)
+        swipeBarContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding((6 * density).toInt(), (2 * density).toInt(), (6 * density).toInt(), (2 * density).toInt())
+            visibility = View.GONE
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#D9121318"))
+                cornerRadius = 14f * density
+            }
+            setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
         }
-        rebuildTopStrip(emptyList())
-        floatingDockWrapper.addView(
-            topBarContainer,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (34 * density).toInt())
-        )
+        val swipeParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = (6 * density).toInt()
+        }
+        floatingDockWrapper.addView(swipeBarContainer, swipeParams)
 
-        // Pannello Appunti integrato
+        // 3. Pannello Appunti (appare quando selezionato dal menu ✦)
         clipboardPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0E0E11"))
             visibility = View.GONE
-            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#EB101115"))
+                cornerRadius = 16f * density
+                setStroke((1.5f * density).toInt(), Color.parseColor("#32353F"))
+            }
+            setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
         }
         val scroll = ScrollView(this)
         clipboardListLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
         scroll.addView(clipboardListLayout)
-        clipboardPanel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (140 * density).toInt()))
-        floatingDockWrapper.addView(clipboardPanel)
+        clipboardPanel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (145 * density).toInt()))
+        val clipParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            bottomMargin = (6 * density).toInt()
+        }
+        floatingDockWrapper.addView(clipboardPanel, clipParams)
 
-        // Tastiera circolare laterale
+        // 4. Tastiera circolare laterale con bottone unico ✦
         keyboardView = AngledKeyboardView(this, this).apply {
             setLeftHanded(isLeftSide)
             setScaleFactor(savedScale)
+            setOpacity(savedOpacity)
+            setIncognitoVisual(isIncognitoActive())
         }
         floatingDockWrapper.addView(
             keyboardView,
@@ -141,7 +183,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
         rootFrame.addView(floatingDockWrapper, dockParams)
 
-        // Overlay a tutto schermo per il Remote Cursor (Mouse)
+        // 5. Overlay Remote Cursor (Mouse)
         remoteCursorOverlay = RemoteCursorOverlay(
             context = this,
             onClose = { hideRemoteCursor() },
@@ -170,6 +212,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
+        val savedScale = prefs.getFloat("kb_scale", 0.74f)
+        val savedOpacity = prefs.getFloat("kb_alpha", 0.92f)
+        val isLeftSide = prefs.getBoolean("left_handed", false)
+        bottomOffsetPx = prefs.getInt("kb_bottom_offset", bottomOffsetPx)
+
         val imeOptions = info?.imeOptions ?: 0
         val inputType = info?.inputType ?: 0
         val variation = inputType and InputType.TYPE_MASK_VARIATION
@@ -190,11 +238,25 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             EditorInfo.IME_ACTION_DONE -> "✓"
             else -> "↵"
         }
+
         if (::keyboardView.isInitialized) {
+            keyboardView.setLeftHanded(isLeftSide)
+            keyboardView.setScaleFactor(savedScale)
+            keyboardView.setOpacity(savedOpacity)
+            keyboardView.setIncognitoVisual(isIncognitoActive())
             keyboardView.setActionIcon(actionSymbol)
         }
-        if (::topBarContainer.isInitialized) {
-            rebuildTopStrip(emptyList())
+        if (::floatingDockWrapper.isInitialized) {
+            val lp = floatingDockWrapper.layoutParams as FrameLayout.LayoutParams
+            lp.gravity = Gravity.BOTTOM or (if (isLeftSide) Gravity.START else Gravity.END)
+            lp.bottomMargin = bottomOffsetPx
+            floatingDockWrapper.layoutParams = lp
+        }
+        if (::extraPanelContainer.isInitialized) {
+            extraPanelContainer.visibility = View.GONE
+        }
+        if (::swipeBarContainer.isInitialized && !isListeningVoice) {
+            swipeBarContainer.visibility = View.GONE
         }
     }
 
@@ -205,7 +267,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         val screenH = rootFrame.height
         if (screenH <= 0) return
 
-        // Non comprime l'app sottostante e lascia tutto il resto dello schermo libero e toccabile!
         outInsets.contentTopInsets = screenH
         outInsets.visibleTopInsets = screenH
         outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_REGION
@@ -222,75 +283,145 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
-    private fun rebuildTopStrip(swipeSuggestions: List<String>) {
+    // --- Gestione Pannello Funzioni Extra (dal bottone unico ✦) ---
+
+    private fun rebuildExtraPanel() {
         val density = resources.displayMetrics.density
-        topBarContainer.removeAllViews()
+        extraPanelContainer.removeAllViews()
+        extraOptionViews.clear()
+        hoveredExtraAction = null
 
-        val incBadge = TextView(this).apply {
-            text = if (isIncognitoActive()) "🕵️ ON" else "🕵️"
-            textSize = 11.5f
-            setTextColor(if (isIncognitoActive()) Color.parseColor("#60A5FA") else Color.parseColor("#8E8E93"))
-            setPadding((6 * density).toInt(), (3 * density).toInt(), (6 * density).toInt(), (3 * density).toInt())
-            setOnClickListener {
-                isManualIncognito = !isManualIncognito
-                rebuildTopStrip(swipeSuggestions)
-            }
-        }
-        topBarContainer.addView(incBadge)
-
-        val scroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-        }
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        if (isListeningVoice) {
-            row.addView(makeChip("🎙️ Stop", true) {
-                stopVoiceDictation()
-            })
-        } else if (swipeSuggestions.isNotEmpty()) {
-            for (word in swipeSuggestions) {
-                row.addView(makeChip(word, false) {
-                    val ic = currentInputConnection ?: return@makeChip
-                    val before = ic.getTextBeforeCursor(40, 0)?.toString() ?: ""
-                    val trimmed = before.trimEnd()
-                    val lastSpace = trimmed.lastIndexOf(' ')
-                    val charsToDelete = before.length - (lastSpace + 1)
-                    if (charsToDelete > 0) {
-                        ic.deleteSurroundingText(charsToDelete, 0)
-                    }
-                    ic.commitText("$word ", 1)
-                    rebuildTopStrip(emptyList())
-                })
-            }
-        } else {
-            row.addView(makeChip("🎙️", false) { onStartVoiceDictation() })
-            row.addView(makeChip("📋", false) { onOpenClipboard() })
-            row.addView(makeChip("🌐", false) { onOpenTranslate() })
-            row.addView(makeChip("🖱️", false) { onActivateRemoteCursor() })
-        }
-
-        scroll.addView(row)
-        topBarContainer.addView(
-            scroll,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val items = listOf(
+            ExtraAction.MOUSE to "🖱️  Mouse (Remote Cursor)",
+            ExtraAction.VOICE to if (isListeningVoice) "⏹️  Ferma dettatura vocale" else "🎙️  Dettatura vocale",
+            ExtraAction.CLIPBOARD to "📋  Appunti",
+            ExtraAction.TRANSLATE to "🌐  Traduci testo",
+            ExtraAction.INCOGNITO to if (isIncognitoActive()) "🕵️  Incognito: ATTIVO" else "🕵️  Incognito: Spento",
+            ExtraAction.FLIP_SIDE to if (keyboardView.isLeftHandedMode()) "⇄  Sposta a Destra" else "⇄  Sposta a Sinistra",
+            ExtraAction.SETTINGS to "⚙️  Dimensioni e Trasparenza"
         )
-    }
 
-    private fun makeChip(label: String, active: Boolean, onClick: () -> Unit): TextView {
-        val density = resources.displayMetrics.density
-        return TextView(this).apply {
-            text = label
-            textSize = 13f
-            setTextColor(if (active) Color.parseColor("#60A5FA") else Color.parseColor("#E5E5EA"))
-            setPadding((8 * density).toInt(), (3 * density).toInt(), (8 * density).toInt(), (3 * density).toInt())
-            setOnClickListener { onClick() }
+        for ((action, label) in items) {
+            val tv = TextView(this).apply {
+                text = label
+                textSize = 13.5f
+                setTextColor(Color.WHITE)
+                background = makeOptionBg(false, density)
+                setPadding((12 * density).toInt(), (9 * density).toInt(), (12 * density).toInt(), (9 * density).toInt())
+                setOnClickListener {
+                    extraPanelContainer.visibility = View.GONE
+                    rootFrame.requestLayout()
+                    executeExtraAction(action)
+                }
+            }
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = (4 * density).toInt()
+            }
+            extraPanelContainer.addView(tv, lp)
+            extraOptionViews.add(action to tv)
         }
     }
+
+    private fun makeOptionBg(highlighted: Boolean, density: Float): GradientDrawable {
+        return GradientDrawable().apply {
+            setColor(if (highlighted) Color.parseColor("#4B7BD6") else Color.parseColor("#1C1D24"))
+            cornerRadius = 11f * density
+        }
+    }
+
+    override fun onShowExtraPanel() {
+        if (extraPanelContainer.visibility != View.VISIBLE) {
+            rebuildExtraPanel()
+            extraPanelContainer.visibility = View.VISIBLE
+            rootFrame.requestLayout()
+        }
+    }
+
+    override fun onToggleExtraPanel() {
+        if (extraPanelContainer.visibility == View.VISIBLE) {
+            extraPanelContainer.visibility = View.GONE
+        } else {
+            rebuildExtraPanel()
+            extraPanelContainer.visibility = View.VISIBLE
+        }
+        rootFrame.requestLayout()
+    }
+
+    override fun onUpdateExtraPanelHover(rawX: Float, rawY: Float) {
+        if (extraPanelContainer.visibility != View.VISIBLE) return
+        val density = resources.displayMetrics.density
+        val loc = IntArray(2)
+        var currentMatch: ExtraAction? = null
+
+        for ((action, view) in extraOptionViews) {
+            view.getLocationOnScreen(loc)
+            val left = loc[0].toFloat()
+            val top = loc[1].toFloat()
+            val right = left + view.width
+            val bottom = top + view.height
+
+            val isInside = rawX in left..right && rawY in top..bottom
+            if (isInside) {
+                currentMatch = action
+            }
+            view.background = makeOptionBg(isInside, density)
+        }
+
+        if (currentMatch != null && currentMatch != hoveredExtraAction) {
+            keyboardView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
+        hoveredExtraAction = currentMatch
+    }
+
+    override fun onReleaseExtraPanelAt(rawX: Float, rawY: Float) {
+        onUpdateExtraPanelHover(rawX, rawY)
+        val chosen = hoveredExtraAction
+        extraPanelContainer.visibility = View.GONE
+        hoveredExtraAction = null
+        rootFrame.requestLayout()
+
+        if (chosen != null) {
+            executeExtraAction(chosen)
+        }
+    }
+
+    private fun executeExtraAction(action: ExtraAction) {
+        when (action) {
+            ExtraAction.MOUSE -> activateRemoteCursor()
+            ExtraAction.VOICE -> startOrStopVoiceDictation()
+            ExtraAction.CLIPBOARD -> toggleClipboardPanel()
+            ExtraAction.TRANSLATE -> openTranslate()
+            ExtraAction.INCOGNITO -> {
+                isManualIncognito = !isManualIncognito
+                keyboardView.setIncognitoVisual(isIncognitoActive())
+                Toast.makeText(
+                    this,
+                    if (isIncognitoActive()) "Modalità Incognito ATTIVA" else "Modalità Incognito disattivata",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            ExtraAction.FLIP_SIDE -> toggleHandSide()
+            ExtraAction.SETTINGS -> {
+                val intent = Intent(this, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+            }
+        }
+    }
+
+    // --- Azioni tastiera ---
 
     override fun onCommitText(text: String) {
+        if (extraPanelContainer.visibility == View.VISIBLE) {
+            extraPanelContainer.visibility = View.GONE
+        }
+        if (!isListeningVoice && swipeBarContainer.visibility == View.VISIBLE) {
+            swipeBarContainer.visibility = View.GONE
+        }
         currentInputConnection?.commitText(text, 1)
     }
 
@@ -320,31 +451,48 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         imm?.showInputMethodPicker()
     }
 
-    override fun onOpenClipboard() {
+    private fun toggleClipboardPanel() {
         if (clipboardPanel.visibility == View.VISIBLE) {
             clipboardPanel.visibility = View.GONE
+            rootFrame.requestLayout()
             return
         }
         val density = resources.displayMetrics.density
         clipboardListLayout.removeAllViews()
 
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val header = TextView(this).apply {
             text = if (isIncognitoActive()) {
-                "🕵️ Incognito ON: registrazione sospesa"
+                "🕵️ Incognito ON: appunti sospesi"
             } else {
                 "📋 Appunti (tocca per incollare)"
             }
             textSize = 11.5f
             setTextColor(Color.parseColor("#8E8E93"))
-            setPadding(0, 0, 0, (6 * density).toInt())
         }
-        clipboardListLayout.addView(header)
+        val closeBtn = TextView(this).apply {
+            text = "✕"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setPadding((10 * density).toInt(), (2 * density).toInt(), (4 * density).toInt(), (2 * density).toInt())
+            setOnClickListener {
+                clipboardPanel.visibility = View.GONE
+                rootFrame.requestLayout()
+            }
+        }
+        headerRow.addView(header, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        headerRow.addView(closeBtn)
+        clipboardListLayout.addView(headerRow)
 
         if (clipboardHistory.isEmpty()) {
             val empty = TextView(this).apply {
-                text = "Nessun appunto salvato."
+                text = "Nessun testo salvato."
                 textSize = 12.5f
                 setTextColor(Color.WHITE)
+                setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
             }
             clipboardListLayout.addView(empty)
         } else {
@@ -359,21 +507,23 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     setOnClickListener {
                         currentInputConnection?.commitText(item, 1)
                         clipboardPanel.visibility = View.GONE
+                        rootFrame.requestLayout()
                     }
                 }
                 val lp = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    bottomMargin = (5 * density).toInt()
+                    topMargin = (5 * density).toInt()
                 }
                 clipboardListLayout.addView(tv, lp)
             }
         }
         clipboardPanel.visibility = View.VISIBLE
+        rootFrame.requestLayout()
     }
 
-    override fun onStartVoiceDictation() {
+    private fun startOrStopVoiceDictation() {
         if (isListeningVoice) {
             stopVoiceDictation()
             return
@@ -394,7 +544,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             speechRecognizer?.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {
                     isListeningVoice = true
-                    rebuildTopStrip(emptyList())
+                    showVoiceBanner()
                 }
                 override fun onBeginningOfSpeech() {}
                 override fun onRmsChanged(rmsdB: Float) {}
@@ -402,12 +552,14 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 override fun onEndOfSpeech() {}
                 override fun onError(error: Int) {
                     isListeningVoice = false
-                    rebuildTopStrip(emptyList())
+                    swipeBarContainer.visibility = View.GONE
+                    rootFrame.requestLayout()
                     Toast.makeText(this@Tastiera45Service, "Dettatura terminata ($error)", Toast.LENGTH_SHORT).show()
                 }
                 override fun onResults(results: Bundle?) {
                     isListeningVoice = false
-                    rebuildTopStrip(emptyList())
+                    swipeBarContainer.visibility = View.GONE
+                    rootFrame.requestLayout()
                     val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                     if (!spoken.isNullOrBlank()) {
                         currentInputConnection?.commitText("$spoken ", 1)
@@ -428,20 +580,29 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
+    private fun showVoiceBanner() {
+        val density = resources.displayMetrics.density
+        swipeBarContainer.removeAllViews()
+        val tv = TextView(this).apply {
+            text = "🎙️ Ascolto... (tocca per fermare)"
+            textSize = 13f
+            setTextColor(Color.parseColor("#60A5FA"))
+            setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
+            setOnClickListener { stopVoiceDictation() }
+        }
+        swipeBarContainer.addView(tv)
+        swipeBarContainer.visibility = View.VISIBLE
+        rootFrame.requestLayout()
+    }
+
     private fun stopVoiceDictation() {
         isListeningVoice = false
         speechRecognizer?.stopListening()
-        rebuildTopStrip(emptyList())
+        swipeBarContainer.visibility = View.GONE
+        rootFrame.requestLayout()
     }
 
-    override fun onOpenVoicePicker() {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        startActivity(intent)
-    }
-
-    override fun onOpenTranslate() {
+    private fun openTranslate() {
         val ic = currentInputConnection
         val selected = ic?.getSelectedText(0)?.toString()
             ?: ic?.getTextBeforeCursor(200, 0)?.toString().orEmpty()
@@ -461,7 +622,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
-    override fun onActivateRemoteCursor() {
+    private fun activateRemoteCursor() {
         remoteCursorOverlay.resetPositions(keyboardView.isLeftHandedMode())
         remoteCursorOverlay.visibility = View.VISIBLE
         rootFrame.requestLayout()
@@ -472,7 +633,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         rootFrame.requestLayout()
     }
 
-    override fun onToggleHandSide() {
+    private fun toggleHandSide() {
         val nextLeft = !keyboardView.isLeftHandedMode()
         keyboardView.setLeftHanded(nextLeft)
 
@@ -497,7 +658,46 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     override fun onSwipeWordDecoded(candidates: List<String>) {
-        rebuildTopStrip(candidates)
+        if (candidates.size <= 1) {
+            swipeBarContainer.visibility = View.GONE
+            return
+        }
+        val density = resources.displayMetrics.density
+        swipeBarContainer.removeAllViews()
+
+        val scroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        for (word in candidates) {
+            val chip = TextView(this).apply {
+                text = word
+                textSize = 13f
+                setTextColor(Color.WHITE)
+                setPadding((10 * density).toInt(), (4 * density).toInt(), (10 * density).toInt(), (4 * density).toInt())
+                setOnClickListener {
+                    val ic = currentInputConnection ?: return@setOnClickListener
+                    val before = ic.getTextBeforeCursor(40, 0)?.toString() ?: ""
+                    val trimmed = before.trimEnd()
+                    val lastSpace = trimmed.lastIndexOf(' ')
+                    val charsToDelete = before.length - (lastSpace + 1)
+                    if (charsToDelete > 0) {
+                        ic.deleteSurroundingText(charsToDelete, 0)
+                    }
+                    ic.commitText("$word ", 1)
+                    swipeBarContainer.visibility = View.GONE
+                    rootFrame.requestLayout()
+                }
+            }
+            row.addView(chip)
+        }
+        scroll.addView(row)
+        swipeBarContainer.addView(scroll)
+        swipeBarContainer.visibility = View.VISIBLE
+        rootFrame.requestLayout()
     }
 
     override fun onDragFloatingKeyboard(deltaScreenY: Float) {
@@ -512,13 +712,5 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             .edit()
             .putInt("kb_bottom_offset", bottomOffsetPx)
             .apply()
-    }
-
-    override fun onResizeScaleChanged(newScale: Float) {
-        getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-            .edit()
-            .putFloat("kb_scale", newScale)
-            .apply()
-        floatingDockWrapper.requestLayout()
     }
 }
