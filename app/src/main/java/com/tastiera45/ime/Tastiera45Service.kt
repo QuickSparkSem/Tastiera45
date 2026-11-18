@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -49,6 +50,15 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         data class CustomShortcut(val type: String, val label: String, val payload: String) : ExtraAction()
     }
 
+    // Contenitore a pieno schermo che NON sovrascrive i LayoutParams di InputMethodService
+    private inner class FullScreenImeFrame(context: Context) : FrameLayout(context) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val screenH = resources.displayMetrics.heightPixels.coerceAtLeast(320)
+            val fullHeightSpec = MeasureSpec.makeMeasureSpec(screenH, MeasureSpec.EXACTLY)
+            super.onMeasure(widthMeasureSpec, fullHeightSpec)
+        }
+    }
+
     private lateinit var rootFrame: FrameLayout
     private lateinit var keyboardView: AngledKeyboardView
     private lateinit var cornerOrbView: CornerOrbView
@@ -72,7 +82,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private var isListeningVoice = false
     private var cursorPadRect = Rect()
 
-    // Coordinate indipendenti per Tasto Magico (✦) e Tastiera su tutto lo schermo
     private var orbXPct = 0.96f
     private var orbBottomOffsetPx = 0
     private var kbXPct = 1.0f
@@ -84,26 +93,46 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     private fun isIncognitoActive(): Boolean = isAutoIncognito || isManualIncognito
 
-    // Evita che Android attivi la modalità a schermo intero coprendo l'app sottostante
     override fun onEvaluateFullscreenMode(): Boolean = false
+
+    private fun safeFloat(prefs: SharedPreferences, key: String, def: Float): Float =
+        try { prefs.getFloat(key, def) } catch (_: Throwable) { def }
+
+    private fun safeInt(prefs: SharedPreferences, key: String, def: Int): Int =
+        try { prefs.getInt(key, def) } catch (_: Throwable) { def }
+
+    private fun safeBool(prefs: SharedPreferences, key: String, def: Boolean): Boolean =
+        try { prefs.getBoolean(key, def) } catch (_: Throwable) { def }
+
+    private fun safeString(prefs: SharedPreferences, key: String, def: String?): String? =
+        try { prefs.getString(key, def) } catch (_: Throwable) { def }
 
     override fun onCreate() {
         super.onCreate()
         loadPersistedClipboard()
-        clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboardManager?.addPrimaryClipChangedListener(clipListener)
-        syncFromSystemClipboard()
+        try {
+            clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            clipboardManager?.addPrimaryClipChangedListener(clipListener)
+            syncFromSystemClipboard()
+        } catch (_: Throwable) {
+        }
     }
 
     override fun onDestroy() {
-        clipboardManager?.removePrimaryClipChangedListener(clipListener)
-        speechRecognizer?.destroy()
+        try {
+            clipboardManager?.removePrimaryClipChangedListener(clipListener)
+        } catch (_: Throwable) {
+        }
+        try {
+            speechRecognizer?.destroy()
+        } catch (_: Throwable) {
+        }
         super.onDestroy()
     }
 
     private fun loadPersistedClipboard() {
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-        val raw = prefs.getString("saved_clipboard", "") ?: ""
+        val raw = safeString(prefs, "saved_clipboard", "") ?: ""
         clipboardHistory.clear()
         if (raw.isNotEmpty()) {
             raw.split("\u001E").filter { it.isNotEmpty() }.forEach { clipboardHistory.add(it) }
@@ -111,73 +140,87 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     private fun savePersistedClipboard() {
-        val encoded = clipboardHistory.take(30).joinToString("\u001E")
-        getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-            .edit()
-            .putString("saved_clipboard", encoded)
-            .apply()
+        try {
+            val encoded = clipboardHistory.take(30).joinToString("\u001E")
+            getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putString("saved_clipboard", encoded)
+                .apply()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun syncFromSystemClipboard() {
         if (isIncognitoActive()) return
-        val clip = clipboardManager?.primaryClip ?: return
-        if (clip.itemCount <= 0) return
+        try {
+            val clip = clipboardManager?.primaryClip ?: return
+            if (clip.itemCount <= 0) return
 
-        var added = false
-        for (i in (clip.itemCount - 1) downTo 0) {
-            val text = clip.getItemAt(i)?.coerceToText(this)?.toString()?.trim()
-            if (!text.isNullOrEmpty()) {
-                if (clipboardHistory.firstOrNull() != text) {
-                    clipboardHistory.remove(text)
-                    clipboardHistory.add(0, text)
-                    added = true
+            var added = false
+            for (i in (clip.itemCount - 1) downTo 0) {
+                val item = clip.getItemAt(i) ?: continue
+                // Usa prima il testo diretto (sicuro anche con URI/immagini) e solo dopo coerceToText protetto
+                val text = try {
+                    item.text?.toString()?.trim()
+                        ?: item.coerceToText(this)?.toString()?.trim()
+                } catch (_: Throwable) {
+                    null
+                }
+                if (!text.isNullOrEmpty()) {
+                    if (clipboardHistory.firstOrNull() != text) {
+                        clipboardHistory.remove(text)
+                        clipboardHistory.add(0, text)
+                        added = true
+                    }
                 }
             }
-        }
-        while (clipboardHistory.size > 30) {
-            clipboardHistory.removeAt(clipboardHistory.lastIndex)
-        }
-        if (added) {
-            savePersistedClipboard()
+            while (clipboardHistory.size > 30) {
+                clipboardHistory.removeAt(clipboardHistory.lastIndex)
+            }
+            if (added) {
+                savePersistedClipboard()
+            }
+        } catch (_: Throwable) {
+            // Ignora errori di accesso su clip contenenti immagini o URI protetti
         }
     }
 
     override fun onCreateInputView(): View {
         val density = resources.displayMetrics.density
-        val screenH = resources.displayMetrics.heightPixels
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
 
-        val isArcMode = prefs.getBoolean("kb_arc_mode", true)
-        val isArcLeft = prefs.getBoolean("kb_arc_left", false)
-        val savedScale = prefs.getFloat("kb_scale", 0.84f)
-        val savedOpacity = prefs.getFloat("kb_alpha", 0.12f)
-        val savedTilt = prefs.getFloat("kb_tilt", 0f)
-        val savedLetterSize = prefs.getFloat("kb_letter_size", 1.0f)
-        val savedKeySpacing = prefs.getFloat("kb_key_spacing", 0.25f)
-        val savedShadowStrength = prefs.getFloat("kb_shadow_strength", 0.90f)
-        val savedShadowBlur = prefs.getFloat("kb_shadow_blur", 6.5f)
-        val orbOnlyStart = prefs.getBoolean("orb_only_start", true)
+        val isArcMode = safeBool(prefs, "kb_arc_mode", true)
+        val isArcLeft = safeBool(prefs, "kb_arc_left", false)
+        val savedScale = safeFloat(prefs, "kb_scale", 0.84f)
+        val savedOpacity = safeFloat(prefs, "kb_alpha", 0.12f)
+        val savedTilt = safeFloat(prefs, "kb_tilt", 0f)
+        val savedLetterSize = safeFloat(prefs, "kb_letter_size", 1.0f)
+        val savedKeySpacing = safeFloat(prefs, "kb_key_spacing", 0.25f)
+        val savedShadowStrength = safeFloat(prefs, "kb_shadow_strength", 0.90f)
+        val savedShadowBlur = safeFloat(prefs, "kb_shadow_blur", 6.5f)
+        val orbOnlyStart = safeBool(prefs, "orb_only_start", true)
 
-        orbXPct = prefs.getFloat("orb_x_pct", 0.96f)
-        orbBottomOffsetPx = prefs.getInt("orb_bottom_offset", (36 * density).toInt())
-        kbXPct = prefs.getFloat("kb_x_pct", 1.0f)
-        kbBottomOffsetPx = prefs.getInt("kb_bottom_offset", (36 * density).toInt())
+        orbXPct = safeFloat(prefs, "orb_x_pct", 0.96f)
+        orbBottomOffsetPx = safeInt(prefs, "orb_bottom_offset", (36 * density).toInt())
+        kbXPct = safeFloat(prefs, "kb_x_pct", 1.0f)
+        kbBottomOffsetPx = safeInt(prefs, "kb_bottom_offset", (36 * density).toInt())
 
         isKeyboardVisible = !orbOnlyStart
 
-        // Altezza pari all'intero schermo affinché la tastiera sia trascinabile ovunque in verticale e orizzontale
-        rootFrame = FrameLayout(this).apply {
+        rootFrame = FullScreenImeFrame(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                screenH
-            )
-            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                applyIndependentPositions()
+            addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                val newW = right - left
+                val newH = bottom - top
+                val oldW = oldRight - oldLeft
+                val oldH = oldBottom - oldTop
+                if (newW != oldW || newH != oldH) {
+                    post { applyIndependentPositions() }
+                }
             }
         }
 
-        // 1. Tastiera (Ad Arco Concentrico dall'angolo oppure Pop-up Scolpito)
+        // 1. Tastiera (Ad Arco Concentrico oppure Pop-up Scolpito)
         keyboardView = AngledKeyboardView(this, this).apply {
             setArcLayoutMode(isArcMode)
             setArcLeftSide(isArcLeft)
@@ -267,7 +310,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         )
         rootFrame.addView(popupColumnWrapper, popupParams)
 
-        // 3. Tasto Magico (✦) con posizione autonoma
+        // 3. Tasto Magico (✦)
         val orbSizePx = (44 * density).toInt()
         cornerOrbView = CornerOrbView(this).apply {
             setIncognitoVisual(isIncognitoActive())
@@ -285,14 +328,17 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             onClose = { hideRemoteCursor() },
             onRequestOpenAccessibility = {
                 Toast.makeText(this, "Attiva 'Tastiera 45° - Remote Cursor' in Accessibilità", Toast.LENGTH_LONG).show()
-                val intent = Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                try {
+                    val intent = Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(intent)
+                } catch (_: Throwable) {
                 }
-                startActivity(intent)
             },
             onTouchableRegionChanged = { rect ->
                 cursorPadRect = rect
-                rootFrame.requestLayout()
+                if (::rootFrame.isInitialized) rootFrame.requestLayout()
             }
         ).apply {
             visibility = View.GONE
@@ -307,27 +353,22 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        val screenH = resources.displayMetrics.heightPixels
-        if (::rootFrame.isInitialized && rootFrame.layoutParams?.height != screenH) {
-            rootFrame.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, screenH)
-        }
-
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-        val isArcMode = prefs.getBoolean("kb_arc_mode", true)
-        val isArcLeft = prefs.getBoolean("kb_arc_left", false)
-        val savedScale = prefs.getFloat("kb_scale", 0.84f)
-        val savedOpacity = prefs.getFloat("kb_alpha", 0.12f)
-        val savedTilt = prefs.getFloat("kb_tilt", 0f)
-        val savedLetterSize = prefs.getFloat("kb_letter_size", 1.0f)
-        val savedKeySpacing = prefs.getFloat("kb_key_spacing", 0.25f)
-        val savedShadowStrength = prefs.getFloat("kb_shadow_strength", 0.90f)
-        val savedShadowBlur = prefs.getFloat("kb_shadow_blur", 6.5f)
-        val orbOnlyStart = prefs.getBoolean("orb_only_start", true)
+        val isArcMode = safeBool(prefs, "kb_arc_mode", true)
+        val isArcLeft = safeBool(prefs, "kb_arc_left", false)
+        val savedScale = safeFloat(prefs, "kb_scale", 0.84f)
+        val savedOpacity = safeFloat(prefs, "kb_alpha", 0.12f)
+        val savedTilt = safeFloat(prefs, "kb_tilt", 0f)
+        val savedLetterSize = safeFloat(prefs, "kb_letter_size", 1.0f)
+        val savedKeySpacing = safeFloat(prefs, "kb_key_spacing", 0.25f)
+        val savedShadowStrength = safeFloat(prefs, "kb_shadow_strength", 0.90f)
+        val savedShadowBlur = safeFloat(prefs, "kb_shadow_blur", 6.5f)
+        val orbOnlyStart = safeBool(prefs, "orb_only_start", true)
 
-        orbXPct = prefs.getFloat("orb_x_pct", orbXPct)
-        orbBottomOffsetPx = prefs.getInt("orb_bottom_offset", orbBottomOffsetPx)
-        kbXPct = prefs.getFloat("kb_x_pct", kbXPct)
-        kbBottomOffsetPx = prefs.getInt("kb_bottom_offset", kbBottomOffsetPx)
+        orbXPct = safeFloat(prefs, "orb_x_pct", orbXPct)
+        orbBottomOffsetPx = safeInt(prefs, "orb_bottom_offset", orbBottomOffsetPx)
+        kbXPct = safeFloat(prefs, "kb_x_pct", kbXPct)
+        kbBottomOffsetPx = safeInt(prefs, "kb_bottom_offset", kbBottomOffsetPx)
 
         isKeyboardVisible = !orbOnlyStart
 
@@ -368,14 +409,16 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         if (::cornerOrbView.isInitialized) {
             cornerOrbView.setIncognitoVisual(isIncognitoActive())
         }
-
         if (::extraPanelContainer.isInitialized) {
             extraPanelContainer.visibility = View.GONE
         }
         if (::swipeBarContainer.isInitialized && !isListeningVoice) {
             swipeBarContainer.visibility = View.GONE
         }
-        applyIndependentPositions()
+        if (::rootFrame.isInitialized) {
+            rootFrame.requestLayout()
+            rootFrame.post { applyIndependentPositions() }
+        }
     }
 
     private fun applyIndependentPositions() {
@@ -383,6 +426,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         val density = resources.displayMetrics.density
         val screenW = rootFrame.width
         val screenH = rootFrame.height
+        var changed = false
 
         // 1. Posizione autonoma Tasto Magico (✦)
         val orbW = cornerOrbView.measuredWidth.takeIf { it > 0 } ?: (44 * density).toInt()
@@ -397,10 +441,11 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 lp.leftMargin = orbLeft
                 lp.bottomMargin = orbBottom
                 cornerOrbView.layoutParams = lp
+                changed = true
             }
         }
 
-        // 2. Posizione autonoma Tastiera su tutto lo schermo (0..screenW, 0..screenH)
+        // 2. Posizione autonoma Tastiera su tutto lo schermo
         val kbW = keyboardView.measuredWidth.takeIf { it > 0 } ?: (screenW * 0.7f).toInt()
         val kbH = keyboardView.measuredHeight.takeIf { it > 0 } ?: (screenW * 0.4f).toInt()
         val maxKbLeft = (screenW - kbW).coerceAtLeast(0)
@@ -413,6 +458,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 lp.leftMargin = kbLeft
                 lp.bottomMargin = kbBottom
                 keyboardView.layoutParams = lp
+                changed = true
             }
         }
 
@@ -436,7 +482,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 lp.leftMargin = popLeft
                 lp.bottomMargin = popBottom
                 popupColumnWrapper.layoutParams = lp
+                changed = true
             }
+        }
+
+        if (changed) {
+            rootFrame.requestLayout()
         }
     }
 
@@ -453,23 +504,25 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         outInsets.touchableRegion.setEmpty()
 
         // 1. Tasto Magico (✦)
-        outInsets.touchableRegion.op(
-            Rect(
-                cornerOrbView.left - 8,
-                cornerOrbView.top - 8,
-                cornerOrbView.right + 8,
-                cornerOrbView.bottom + 8
-            ),
-            Region.Op.UNION
-        )
+        if (cornerOrbView.width > 0 && cornerOrbView.height > 0) {
+            outInsets.touchableRegion.op(
+                Rect(
+                    cornerOrbView.left - 8,
+                    cornerOrbView.top - 8,
+                    cornerOrbView.right + 8,
+                    cornerOrbView.bottom + 8
+                ),
+                Region.Op.UNION
+            )
+        }
 
         // 2. Solo la sagoma esatta della tastiera (Arco o Pop-up Scolpito)
-        if (keyboardView.visibility == View.VISIBLE) {
+        if (keyboardView.visibility == View.VISIBLE && keyboardView.width > 0 && keyboardView.height > 0) {
             keyboardView.appendContourToRegion(outInsets.touchableRegion, keyboardView.left, keyboardView.top)
         }
 
         // 3. Pannelli aperti
-        if (extraPanelContainer.visibility == View.VISIBLE) {
+        if (extraPanelContainer.visibility == View.VISIBLE && extraPanelContainer.width > 0 && extraPanelContainer.height > 0) {
             outInsets.touchableRegion.op(
                 Rect(
                     popupColumnWrapper.left + extraPanelContainer.left,
@@ -480,7 +533,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 Region.Op.UNION
             )
         }
-        if (swipeBarContainer.visibility == View.VISIBLE) {
+        if (swipeBarContainer.visibility == View.VISIBLE && swipeBarContainer.width > 0 && swipeBarContainer.height > 0) {
             outInsets.touchableRegion.op(
                 Rect(
                     popupColumnWrapper.left + swipeBarContainer.left,
@@ -491,7 +544,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 Region.Op.UNION
             )
         }
-        if (clipboardPanel.visibility == View.VISIBLE) {
+        if (clipboardPanel.visibility == View.VISIBLE && clipboardPanel.width > 0 && clipboardPanel.height > 0) {
             outInsets.touchableRegion.op(
                 Rect(
                     popupColumnWrapper.left + clipboardPanel.left,
@@ -504,7 +557,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
 
         // 4. Remote Cursor (Mouse)
-        if (::remoteCursorOverlay.isInitialized && remoteCursorOverlay.visibility == View.VISIBLE) {
+        if (::remoteCursorOverlay.isInitialized && remoteCursorOverlay.visibility == View.VISIBLE && !cursorPadRect.isEmpty) {
             outInsets.touchableRegion.op(cursorPadRect, Region.Op.UNION)
         }
     }
@@ -549,6 +602,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             val cx = width / 2f
             val cy = height / 2f
             val r = (minOf(width, height) / 2f) - 2f
+            if (r <= 0f) return
             borderPaint.color = if (incognitoActive) Color.WHITE else Color.parseColor("#606068")
             borderPaint.strokeWidth = if (incognitoActive) 3.2f else 2.0f
             canvas.drawCircle(cx, cy, r, bgPaint)
@@ -604,7 +658,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     private fun loadCustomShortcuts(): List<StoredShortcut> {
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-        val raw = prefs.getString("custom_shortcuts", "") ?: ""
+        val raw = safeString(prefs, "custom_shortcuts", "") ?: ""
         if (raw.isBlank()) return emptyList()
         return raw.split("\u001E").mapNotNull { entry ->
             val parts = entry.split("\u001F")
@@ -683,20 +737,21 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         if (extraPanelContainer.visibility != View.VISIBLE) {
             rebuildExtraPanel()
             extraPanelContainer.visibility = View.VISIBLE
-            applyIndependentPositions()
             rootFrame.requestLayout()
+            rootFrame.post { applyIndependentPositions() }
         }
     }
 
     private fun toggleExtraPanel() {
         if (extraPanelContainer.visibility == View.VISIBLE) {
             extraPanelContainer.visibility = View.GONE
+            rootFrame.requestLayout()
         } else {
             rebuildExtraPanel()
             extraPanelContainer.visibility = View.VISIBLE
-            applyIndependentPositions()
+            rootFrame.requestLayout()
+            rootFrame.post { applyIndependentPositions() }
         }
-        rootFrame.requestLayout()
     }
 
     private fun updateExtraPanelHover(rawX: Float, rawY: Float) {
@@ -743,8 +798,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             is ExtraAction.ToggleKeyboard -> {
                 isKeyboardVisible = !isKeyboardVisible
                 keyboardView.visibility = if (isKeyboardVisible) View.VISIBLE else View.GONE
-                applyIndependentPositions()
                 rootFrame.requestLayout()
+                rootFrame.post { applyIndependentPositions() }
             }
             is ExtraAction.SwitchLayoutStyle -> {
                 val nextArc = !keyboardView.isArcLayoutMode()
@@ -755,8 +810,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     .edit()
                     .putBoolean("kb_arc_mode", nextArc)
                     .apply()
-                applyIndependentPositions()
                 rootFrame.requestLayout()
+                rootFrame.post { applyIndependentPositions() }
             }
             is ExtraAction.Voice -> startOrStopVoiceDictation()
             is ExtraAction.Mouse -> {
@@ -781,10 +836,13 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 ).show()
             }
             is ExtraAction.Settings -> {
-                val intent = Intent(this, MainActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                try {
+                    val intent = Intent(this, MainActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(intent)
+                } catch (_: Throwable) {
                 }
-                startActivity(intent)
             }
             is ExtraAction.CustomShortcut -> executeCustomShortcut(action)
         }
@@ -799,17 +857,21 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                     startActivity(intent)
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
                     Toast.makeText(this, "Impossibile avviare '${sc.label}'", Toast.LENGTH_SHORT).show()
                 }
             }
             "APP" -> {
-                val launch = packageManager.getLaunchIntentForPackage(sc.payload)
-                if (launch != null) {
-                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(launch)
-                } else {
-                    Toast.makeText(this, "App non trovata", Toast.LENGTH_SHORT).show()
+                try {
+                    val launch = packageManager.getLaunchIntentForPackage(sc.payload)
+                    if (launch != null) {
+                        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(launch)
+                    } else {
+                        Toast.makeText(this, "App non trovata", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (_: Throwable) {
+                    Toast.makeText(this, "Impossibile aprire l'app", Toast.LENGTH_SHORT).show()
                 }
             }
             else -> {
@@ -844,7 +906,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 try {
                     startActivity(testIntent)
                     return
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
                 }
             }
         }
@@ -853,7 +915,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             startActivity(Intent.createChooser(processIntent, "Assistente di scrittura").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             Toast.makeText(this, "Nessun assistente di scrittura trovato", Toast.LENGTH_SHORT).show()
         }
     }
@@ -892,8 +954,11 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     override fun onSwitchIme() {
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        imm?.showInputMethodPicker()
+        try {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.showInputMethodPicker()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun toggleClipboardPanel() {
@@ -964,7 +1029,10 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     setOnClickListener {
                         currentInputConnection?.commitText(item, 1)
                         if (!isIncognitoActive()) {
-                            clipboardManager?.setPrimaryClip(ClipData.newPlainText("text", item))
+                            try {
+                                clipboardManager?.setPrimaryClip(ClipData.newPlainText("text", item))
+                            } catch (_: Throwable) {
+                            }
                         }
                         clipboardPanel.visibility = View.GONE
                         rootFrame.requestLayout()
@@ -980,8 +1048,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
         }
         clipboardPanel.visibility = View.VISIBLE
-        applyIndependentPositions()
         rootFrame.requestLayout()
+        rootFrame.post { applyIndependentPositions() }
     }
 
     private fun startOrStopVoiceDictation() {
@@ -990,7 +1058,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             return
         }
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-        val savedComponent = prefs.getString("voice_service_component", null)
+        val savedComponent = safeString(prefs, "voice_service_component", null)
 
         try {
             speechRecognizer?.destroy()
@@ -1036,7 +1104,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
             }
             speechRecognizer?.startListening(intent)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             Toast.makeText(this, "Apri l'app per abilitare il microfono o scegliere il motore vocale.", Toast.LENGTH_LONG).show()
         }
     }
@@ -1053,13 +1121,16 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
         swipeBarContainer.addView(tv)
         swipeBarContainer.visibility = View.VISIBLE
-        applyIndependentPositions()
         rootFrame.requestLayout()
+        rootFrame.post { applyIndependentPositions() }
     }
 
     private fun stopVoiceDictation() {
         isListeningVoice = false
-        speechRecognizer?.stopListening()
+        try {
+            speechRecognizer?.stopListening()
+        } catch (_: Throwable) {
+        }
         swipeBarContainer.visibility = View.GONE
         rootFrame.requestLayout()
     }
@@ -1079,15 +1150,18 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             startActivity(Intent.createChooser(processIntent, "Traduci testo").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             Toast.makeText(this, "Installa Google Traduttore o Samsung Traduttore", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun activateRemoteCursor() {
-        remoteCursorOverlay.resetPositions(orbXPct < 0.5f)
-        remoteCursorOverlay.visibility = View.VISIBLE
-        rootFrame.requestLayout()
+        try {
+            remoteCursorOverlay.resetPositions(orbXPct < 0.5f)
+            remoteCursorOverlay.visibility = View.VISIBLE
+            rootFrame.requestLayout()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun hideRemoteCursor() {
@@ -1145,8 +1219,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         scroll.addView(row)
         swipeBarContainer.addView(scroll)
         swipeBarContainer.visibility = View.VISIBLE
-        applyIndependentPositions()
         rootFrame.requestLayout()
+        rootFrame.post { applyIndependentPositions() }
     }
 
     override fun onDragFloatingKeyboard(deltaScreenX: Float, deltaScreenY: Float) {
