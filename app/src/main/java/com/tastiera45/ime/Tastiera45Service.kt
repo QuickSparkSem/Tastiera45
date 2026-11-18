@@ -1,5 +1,6 @@
 package com.tastiera45.ime
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
@@ -43,7 +44,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         object Clipboard : ExtraAction()
         object Translate : ExtraAction()
         object Incognito : ExtraAction()
-        object FlipSide : ExtraAction()
         object Settings : ExtraAction()
         data class CustomShortcut(val type: String, val label: String, val payload: String) : ExtraAction()
     }
@@ -70,26 +70,25 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListeningVoice = false
     private var cursorPadRect = Rect()
-    private var bottomOffsetPx = 0
+
+    // Coordinate indipendenti per Tasto Magico (✦) e Tastiera Pop-up
+    private var orbXPct = 0.96f
+    private var orbBottomOffsetPx = 0
+    private var kbXPct = 0.85f
+    private var kbBottomOffsetPx = 0
 
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
-        if (isIncognitoActive()) return@OnPrimaryClipChangedListener
-        val text = clipboardManager?.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
-        if (!text.isNullOrEmpty()) {
-            clipboardHistory.remove(text)
-            clipboardHistory.add(0, text)
-            if (clipboardHistory.size > 25) {
-                clipboardHistory.removeAt(clipboardHistory.lastIndex)
-            }
-        }
+        syncFromSystemClipboard()
     }
 
     private fun isIncognitoActive(): Boolean = isAutoIncognito || isManualIncognito
 
     override fun onCreate() {
         super.onCreate()
+        loadPersistedClipboard()
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         clipboardManager?.addPrimaryClipChangedListener(clipListener)
+        syncFromSystemClipboard()
     }
 
     override fun onDestroy() {
@@ -98,27 +97,74 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         super.onDestroy()
     }
 
+    private fun loadPersistedClipboard() {
+        val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
+        val raw = prefs.getString("saved_clipboard", "") ?: ""
+        clipboardHistory.clear()
+        if (raw.isNotEmpty()) {
+            raw.split("\u001E").filter { it.isNotEmpty() }.forEach { clipboardHistory.add(it) }
+        }
+    }
+
+    private fun savePersistedClipboard() {
+        val encoded = clipboardHistory.take(30).joinToString("\u001E")
+        getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("saved_clipboard", encoded)
+            .apply()
+    }
+
+    private fun syncFromSystemClipboard() {
+        if (isIncognitoActive()) return
+        val clip = clipboardManager?.primaryClip ?: return
+        if (clip.itemCount <= 0) return
+
+        var added = false
+        for (i in (clip.itemCount - 1) downTo 0) {
+            val text = clip.getItemAt(i)?.coerceToText(this)?.toString()?.trim()
+            if (!text.isNullOrEmpty()) {
+                if (clipboardHistory.firstOrNull() != text) {
+                    clipboardHistory.remove(text)
+                    clipboardHistory.add(0, text)
+                    added = true
+                }
+            }
+        }
+        while (clipboardHistory.size > 30) {
+            clipboardHistory.removeAt(clipboardHistory.lastIndex)
+        }
+        if (added) {
+            savePersistedClipboard()
+        }
+    }
+
     override fun onCreateInputView(): View {
         val density = resources.displayMetrics.density
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-        val isLeftSide = prefs.getBoolean("left_handed", false)
-        val savedScale = prefs.getFloat("kb_scale", 0.80f)
-        val savedOpacity = prefs.getFloat("kb_alpha", 0.92f)
-        val savedTilt = prefs.getFloat("kb_tilt", -28f)
+
+        val savedScale = prefs.getFloat("kb_scale", 0.82f)
+        val savedOpacity = prefs.getFloat("kb_alpha", 0.94f)
+        val savedTilt = prefs.getFloat("kb_tilt", -22f)
         val savedLetterSize = prefs.getFloat("kb_letter_size", 1.0f)
         val savedKeySpacing = prefs.getFloat("kb_key_spacing", 0.25f)
         val orbOnlyStart = prefs.getBoolean("orb_only_start", true)
-        bottomOffsetPx = prefs.getInt("kb_bottom_offset", (42 * density).toInt())
+
+        orbXPct = prefs.getFloat("orb_x_pct", 0.96f)
+        orbBottomOffsetPx = prefs.getInt("orb_bottom_offset", (36 * density).toInt())
+        kbXPct = prefs.getFloat("kb_x_pct", 0.85f)
+        kbBottomOffsetPx = prefs.getInt("kb_bottom_offset", (92 * density).toInt())
 
         isKeyboardVisible = !orbOnlyStart
 
         rootFrame = FrameLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                applyIndependentPositions()
+            }
         }
 
-        // 1. Tastiera tonda laterale (può restare chiusa lasciando solo il tasto ✦ nell'angolo)
+        // 1. Tastiera Pop-up Scolpita (aderente alle lettere, zero nero in eccesso)
         keyboardView = AngledKeyboardView(this, this).apply {
-            setLeftHanded(isLeftSide)
             setScaleFactor(savedScale)
             setOpacity(savedOpacity)
             setTiltAngle(savedTilt)
@@ -129,13 +175,11 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         val kbParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM or (if (isLeftSide) Gravity.START else Gravity.END)
-        ).apply {
-            bottomMargin = bottomOffsetPx
-        }
+            Gravity.BOTTOM or Gravity.START
+        )
         rootFrame.addView(keyboardView, kbParams)
 
-        // 2. Colonna popup minimal (Menu ✦, Suggerimenti Swipe, Stato Voce, Appunti)
+        // 2. Colonna popup minimal (Menu ✦, Suggerimenti Swipe, Voce, Appunti)
         popupColumnWrapper = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.TRANSPARENT)
@@ -145,15 +189,15 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#EB0B0C0E"))
+                setColor(Color.parseColor("#F008080A"))
                 cornerRadius = 14f * density
-                setStroke((1f * density).toInt(), Color.parseColor("#2A2C34"))
+                setStroke((1f * density).toInt(), Color.parseColor("#303036"))
             }
             setPadding((6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt())
         }
         popupColumnWrapper.addView(
             extraPanelContainer,
-            LinearLayout.LayoutParams((225 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            LinearLayout.LayoutParams((220 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = (6 * density).toInt()
             }
         )
@@ -163,9 +207,9 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#E00D0E12"))
+                setColor(Color.parseColor("#E608080A"))
                 cornerRadius = 12f * density
-                setStroke((1f * density).toInt(), Color.parseColor("#25272E"))
+                setStroke((1f * density).toInt(), Color.parseColor("#303036"))
             }
             setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
         }
@@ -180,9 +224,9 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#EB0B0C0E"))
+                setColor(Color.parseColor("#F008080A"))
                 cornerRadius = 14f * density
-                setStroke((1f * density).toInt(), Color.parseColor("#2A2C34"))
+                setStroke((1f * density).toInt(), Color.parseColor("#303036"))
             }
             setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
         }
@@ -191,7 +235,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             orientation = LinearLayout.VERTICAL
         }
         scroll.addView(clipboardListLayout)
-        clipboardPanel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (140 * density).toInt()))
+        clipboardPanel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (145 * density).toInt()))
         popupColumnWrapper.addView(
             clipboardPanel,
             LinearLayout.LayoutParams((235 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -199,34 +243,26 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
         )
 
-        val orbSizePx = (44 * density).toInt()
         val popupParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM or (if (isLeftSide) Gravity.START else Gravity.END)
-        ).apply {
-            bottomMargin = bottomOffsetPx + orbSizePx + (10 * density).toInt()
-            marginStart = (10 * density).toInt()
-            marginEnd = (10 * density).toInt()
-        }
+            Gravity.BOTTOM or Gravity.START
+        )
         rootFrame.addView(popupColumnWrapper, popupParams)
 
-        // 3. Tasto unico nell'angolo (✦) — sempre presente sull'angolo scelto
+        // 3. Tasto Magico (✦) con posizione autonoma
+        val orbSizePx = (44 * density).toInt()
         cornerOrbView = CornerOrbView(this).apply {
             setIncognitoVisual(isIncognitoActive())
         }
         val orbParams = FrameLayout.LayoutParams(
             orbSizePx,
             orbSizePx,
-            Gravity.BOTTOM or (if (isLeftSide) Gravity.START else Gravity.END)
-        ).apply {
-            bottomMargin = bottomOffsetPx
-            marginStart = (10 * density).toInt()
-            marginEnd = (10 * density).toInt()
-        }
+            Gravity.BOTTOM or Gravity.START
+        )
         rootFrame.addView(cornerOrbView, orbParams)
 
-        // 4. Overlay Remote Cursor (Mouse) — utilizzabile anche insieme a tastiera e voce
+        // 4. Overlay Remote Cursor (Mouse)
         remoteCursorOverlay = RemoteCursorOverlay(
             context = this,
             onClose = { hideRemoteCursor() },
@@ -254,16 +290,18 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        val density = resources.displayMetrics.density
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-        val savedScale = prefs.getFloat("kb_scale", 0.80f)
-        val savedOpacity = prefs.getFloat("kb_alpha", 0.92f)
-        val savedTilt = prefs.getFloat("kb_tilt", -28f)
+        val savedScale = prefs.getFloat("kb_scale", 0.82f)
+        val savedOpacity = prefs.getFloat("kb_alpha", 0.94f)
+        val savedTilt = prefs.getFloat("kb_tilt", -22f)
         val savedLetterSize = prefs.getFloat("kb_letter_size", 1.0f)
         val savedKeySpacing = prefs.getFloat("kb_key_spacing", 0.25f)
-        val isLeftSide = prefs.getBoolean("left_handed", false)
         val orbOnlyStart = prefs.getBoolean("orb_only_start", true)
-        bottomOffsetPx = prefs.getInt("kb_bottom_offset", bottomOffsetPx)
+
+        orbXPct = prefs.getFloat("orb_x_pct", orbXPct)
+        orbBottomOffsetPx = prefs.getInt("orb_bottom_offset", orbBottomOffsetPx)
+        kbXPct = prefs.getFloat("kb_x_pct", kbXPct)
+        kbBottomOffsetPx = prefs.getInt("kb_bottom_offset", kbBottomOffsetPx)
 
         isKeyboardVisible = !orbOnlyStart
 
@@ -278,30 +316,29 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
 
         isAutoIncognito = noLearning || isPassword
+        syncFromSystemClipboard()
 
         val action = imeOptions and EditorInfo.IME_MASK_ACTION
-        val actionSymbol = when (action) {
-            EditorInfo.IME_ACTION_SEARCH -> "🔍"
-            EditorInfo.IME_ACTION_SEND -> "➤"
-            EditorInfo.IME_ACTION_NEXT -> "⇥"
-            EditorInfo.IME_ACTION_DONE -> "✓"
-            else -> "↵"
+        val actionName = when (action) {
+            EditorInfo.IME_ACTION_SEARCH -> "SEARCH"
+            EditorInfo.IME_ACTION_SEND -> "SEND"
+            EditorInfo.IME_ACTION_NEXT -> "NEXT"
+            EditorInfo.IME_ACTION_DONE -> "DONE"
+            else -> "RETURN"
         }
 
         if (::keyboardView.isInitialized) {
-            keyboardView.setLeftHanded(isLeftSide)
             keyboardView.setScaleFactor(savedScale)
             keyboardView.setOpacity(savedOpacity)
             keyboardView.setTiltAngle(savedTilt)
             keyboardView.setLetterSizeScale(savedLetterSize)
             keyboardView.setKeySpacingScale(savedKeySpacing)
-            keyboardView.setActionIcon(actionSymbol)
+            keyboardView.setActionType(actionName)
             keyboardView.visibility = if (isKeyboardVisible) View.VISIBLE else View.GONE
         }
         if (::cornerOrbView.isInitialized) {
             cornerOrbView.setIncognitoVisual(isIncognitoActive())
         }
-        applySideAndOffsetLayout(isLeftSide, density)
 
         if (::extraPanelContainer.isInitialized) {
             extraPanelContainer.visibility = View.GONE
@@ -309,26 +346,68 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         if (::swipeBarContainer.isInitialized && !isListeningVoice) {
             swipeBarContainer.visibility = View.GONE
         }
+        applyIndependentPositions()
     }
 
-    private fun applySideAndOffsetLayout(isLeftSide: Boolean, density: Float) {
-        val sideGravity = Gravity.BOTTOM or (if (isLeftSide) Gravity.START else Gravity.END)
-        val orbSizePx = (44 * density).toInt()
+    private fun applyIndependentPositions() {
+        if (!::rootFrame.isInitialized || rootFrame.width <= 0 || rootFrame.height <= 0) return
+        val density = resources.displayMetrics.density
+        val screenW = rootFrame.width
+        val screenH = rootFrame.height
+
+        // 1. Posizione autonoma Tasto Magico (✦)
+        val orbW = cornerOrbView.measuredWidth.takeIf { it > 0 } ?: (44 * density).toInt()
+        val orbH = cornerOrbView.measuredHeight.takeIf { it > 0 } ?: (44 * density).toInt()
+        val maxOrbLeft = (screenW - orbW).coerceAtLeast(0)
+        val maxOrbBottom = (screenH - orbH).coerceAtLeast(0)
+        val orbLeft = (maxOrbLeft * orbXPct.coerceIn(0f, 1f)).toInt()
+        val orbBottom = orbBottomOffsetPx.coerceIn(0, maxOrbBottom)
+
+        (cornerOrbView.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            if (lp.leftMargin != orbLeft || lp.bottomMargin != orbBottom) {
+                lp.leftMargin = orbLeft
+                lp.bottomMargin = orbBottom
+                cornerOrbView.layoutParams = lp
+            }
+        }
+
+        // 2. Posizione autonoma Tastiera Pop-up Scolpita
+        val kbW = keyboardView.measuredWidth.takeIf { it > 0 } ?: (screenW * 0.7f).toInt()
+        val kbH = keyboardView.measuredHeight.takeIf { it > 0 } ?: (screenW * 0.4f).toInt()
+        val maxKbLeft = (screenW - kbW).coerceAtLeast(0)
+        val maxKbBottom = (screenH - kbH).coerceAtLeast(0)
+        val kbLeft = (maxKbLeft * kbXPct.coerceIn(0f, 1f)).toInt()
+        val kbBottom = kbBottomOffsetPx.coerceIn(0, maxKbBottom)
 
         (keyboardView.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            lp.gravity = sideGravity
-            lp.bottomMargin = bottomOffsetPx
-            keyboardView.layoutParams = lp
+            if (lp.leftMargin != kbLeft || lp.bottomMargin != kbBottom) {
+                lp.leftMargin = kbLeft
+                lp.bottomMargin = kbBottom
+                keyboardView.layoutParams = lp
+            }
         }
-        (cornerOrbView.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            lp.gravity = sideGravity
-            lp.bottomMargin = bottomOffsetPx
-            cornerOrbView.layoutParams = lp
+
+        // 3. Posizione menu funzioni extra ancorato vicino al Tasto Magico (✦)
+        val popW = popupColumnWrapper.measuredWidth.takeIf { it > 0 } ?: (225 * density).toInt()
+        val popH = popupColumnWrapper.measuredHeight.takeIf { it > 0 } ?: (240 * density).toInt()
+        val popLeft = if (orbLeft + popW <= screenW) {
+            orbLeft
+        } else {
+            (orbLeft + orbW - popW).coerceIn(0, (screenW - popW).coerceAtLeast(0))
         }
+        val aboveOrbBottom = orbBottom + orbH + (8 * density).toInt()
+        val popBottom = if (aboveOrbBottom + popH <= screenH) {
+            aboveOrbBottom
+        } else {
+            (orbBottom - popH - (8 * density).toInt()).coerceIn(0, (screenH - popH).coerceAtLeast(0))
+        }
+
         (popupColumnWrapper.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            lp.gravity = sideGravity
-            lp.bottomMargin = bottomOffsetPx + orbSizePx + (10 * density).toInt()
-            popupColumnWrapper.layoutParams = lp
+            if (lp.leftMargin != popLeft || lp.bottomMargin != popBottom) {
+                lp.leftMargin = popLeft
+                lp.bottomMargin = popBottom
+                popupColumnWrapper.layoutParams = lp
+            }
         }
     }
 
@@ -344,7 +423,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_REGION
         outInsets.touchableRegion.setEmpty()
 
-        // 1. Il tasto unico ✦ nell'angolo è sempre toccabile
+        // 1. Tasto Magico (✦)
         outInsets.touchableRegion.op(
             Rect(
                 cornerOrbView.left - 8,
@@ -355,12 +434,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             Region.Op.UNION
         )
 
-        // 2. Se la tastiera tonda è aperta, aggiunge SOLO la sua forma circolare
+        // 2. Solo la sagoma scolpita dei tasti della Tastiera Pop-up (zero nero in eccesso)
         if (keyboardView.visibility == View.VISIBLE) {
-            keyboardView.appendCircleToRegion(outInsets.touchableRegion, keyboardView.left, keyboardView.top)
+            keyboardView.appendContourToRegion(outInsets.touchableRegion, keyboardView.left, keyboardView.top)
         }
 
-        // 3. Menu funzioni extra / barra suggerimenti / appunti se aperti
+        // 3. Pannelli aperti (Menu, Suggerimenti, Appunti)
         if (extraPanelContainer.visibility == View.VISIBLE) {
             outInsets.touchableRegion.op(
                 Rect(
@@ -395,13 +474,13 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             )
         }
 
-        // 4. Remote Cursor (Mouse) se attivo
+        // 4. Remote Cursor (Mouse)
         if (::remoteCursorOverlay.isInitialized && remoteCursorOverlay.visibility == View.VISIBLE) {
             outInsets.touchableRegion.op(cursorPadRect, Region.Op.UNION)
         }
     }
 
-    // --- Tasto unico nell'angolo: hold-drag & tap ---
+    // --- Tasto Magico (✦) bianco e nero minimal ---
 
     private inner class CornerOrbView(context: Context) : View(context) {
         private var incognitoActive = false
@@ -418,13 +497,13 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
 
         private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#EE0E0F13")
+            color = Color.parseColor("#F208080A")
             style = Paint.Style.FILL
         }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#3B3E48")
+            color = Color.parseColor("#44444A")
             style = Paint.Style.STROKE
-            strokeWidth = 2.5f
+            strokeWidth = 2.2f
         }
         private val symbolPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
@@ -441,12 +520,13 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             val cx = width / 2f
             val cy = height / 2f
             val r = (minOf(width, height) / 2f) - 2f
-            borderPaint.color = if (incognitoActive) Color.parseColor("#60A5FA") else Color.parseColor("#3B3E48")
+            borderPaint.color = if (incognitoActive) Color.WHITE else Color.parseColor("#44444A")
+            borderPaint.strokeWidth = if (incognitoActive) 3.2f else 2.0f
             canvas.drawCircle(cx, cy, r, bgPaint)
             canvas.drawCircle(cx, cy, r, borderPaint)
 
             symbolPaint.textSize = r * 0.85f
-            symbolPaint.color = if (incognitoActive) Color.parseColor("#60A5FA") else Color.WHITE
+            symbolPaint.color = Color.WHITE
             val textY = cy - (symbolPaint.descent() + symbolPaint.ascent()) / 2f
             canvas.drawText("✦", cx, textY, symbolPaint)
         }
@@ -489,7 +569,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
-    // --- Menu Minimal Funzioni Extra + Scorciatoie Personalizzate ---
+    // --- Menu Minimal Bianco & Nero Funzioni Extra + Scorciatoie ---
 
     private data class StoredShortcut(val type: String, val label: String, val payload: String)
 
@@ -514,17 +594,15 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         hoveredExtraAction = null
 
         val items = mutableListOf<Pair<ExtraAction, String>>(
-            ExtraAction.ToggleKeyboard to if (isKeyboardVisible) "⌨   Chiudi tastiera" else "⌨   Tastiera",
+            ExtraAction.ToggleKeyboard to if (isKeyboardVisible) "✕   Chiudi tastiera" else "⊞   Tastiera",
             ExtraAction.Voice to if (isListeningVoice) "■   Ferma dettatura" else "◉   Dettatura",
-            ExtraAction.Mouse to if (remoteCursorOverlay.visibility == View.VISIBLE) "⌖   Chiudi mouse" else "⌖   Mouse",
+            ExtraAction.Mouse to if (remoteCursorOverlay.visibility == View.VISIBLE) "✕   Chiudi mouse" else "⌖   Mouse",
             ExtraAction.Clipboard to "⎘   Appunti",
             ExtraAction.Translate to "文   Traduci",
             ExtraAction.Incognito to if (isIncognitoActive()) "●   Incognito ON" else "◌   Incognito OFF",
-            ExtraAction.FlipSide to if (keyboardView.isLeftHandedMode()) "⇄   Lato destro" else "⇄   Lato sinistro",
             ExtraAction.Settings to "⚙   Impostazioni"
         )
 
-        // Aggiunge le scorciatoie personalizzate (Shortcut Maker, Assistente Samsung, App, Testi)
         for (sc in loadCustomShortcuts()) {
             val prefix = when (sc.type) {
                 "SAMSUNG_ASSIST" -> "✦"
@@ -540,7 +618,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             val tv = TextView(this).apply {
                 text = label
                 textSize = 13f
-                setTextColor(Color.parseColor("#F2F2F7"))
+                setTextColor(Color.WHITE)
                 background = makeMinimalOptionBg(false, density)
                 setPadding((10 * density).toInt(), (7 * density).toInt(), (10 * density).toInt(), (7 * density).toInt())
                 setOnClickListener {
@@ -564,8 +642,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     private fun makeMinimalOptionBg(highlighted: Boolean, density: Float): GradientDrawable {
         return GradientDrawable().apply {
-            setColor(if (highlighted) Color.argb(65, 255, 255, 255) else Color.TRANSPARENT)
-            cornerRadius = 9f * density
+            setColor(if (highlighted) Color.WHITE else Color.TRANSPARENT)
+            cornerRadius = 8f * density
         }
     }
 
@@ -573,6 +651,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         if (extraPanelContainer.visibility != View.VISIBLE) {
             rebuildExtraPanel()
             extraPanelContainer.visibility = View.VISIBLE
+            applyIndependentPositions()
             rootFrame.requestLayout()
         }
     }
@@ -583,6 +662,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         } else {
             rebuildExtraPanel()
             extraPanelContainer.visibility = View.VISIBLE
+            applyIndependentPositions()
         }
         rootFrame.requestLayout()
     }
@@ -605,6 +685,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 currentMatch = action
             }
             view.background = makeMinimalOptionBg(isInside, density)
+            view.setTextColor(if (isInside) Color.BLACK else Color.WHITE)
         }
 
         if (currentMatch != null && currentMatch != hoveredExtraAction) {
@@ -630,6 +711,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             is ExtraAction.ToggleKeyboard -> {
                 isKeyboardVisible = !isKeyboardVisible
                 keyboardView.visibility = if (isKeyboardVisible) View.VISIBLE else View.GONE
+                applyIndependentPositions()
                 rootFrame.requestLayout()
             }
             is ExtraAction.Voice -> startOrStopVoiceDictation()
@@ -645,13 +727,15 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             is ExtraAction.Incognito -> {
                 isManualIncognito = !isManualIncognito
                 cornerOrbView.setIncognitoVisual(isIncognitoActive())
+                if (!isIncognitoActive()) {
+                    syncFromSystemClipboard()
+                }
                 Toast.makeText(
                     this,
                     if (isIncognitoActive()) "Incognito ON" else "Incognito OFF",
                     Toast.LENGTH_SHORT
                 ).show()
             }
-            is ExtraAction.FlipSide -> toggleHandSide()
             is ExtraAction.Settings -> {
                 val intent = Intent(this, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -672,7 +756,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     }
                     startActivity(intent)
                 } catch (_: Exception) {
-                    Toast.makeText(this, "Impossibile avviare la scorciatoia '${sc.label}'", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Impossibile avviare '${sc.label}'", Toast.LENGTH_SHORT).show()
                 }
             }
             "APP" -> {
@@ -706,7 +790,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-        // Cerca prima i pacchetti Samsung (Tastiera Samsung / Assistente di scrittura / Smart Suggestions)
         val samsungPackages = listOf(
             "com.samsung.android.honeyboard",
             "com.samsung.android.smartsuggestions"
@@ -722,13 +805,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
         }
 
-        // Altrimenti apre il selettore degli assistenti di testo installati
         try {
             startActivity(Intent.createChooser(processIntent, "Assistente di scrittura").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
         } catch (_: Exception) {
-            Toast.makeText(this, "Nessun assistente di scrittura trovato su questo dispositivo", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Nessun assistente di scrittura trovato", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -776,6 +858,9 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             rootFrame.requestLayout()
             return
         }
+        // Sincronizza subito con gli appunti di sistema prima di mostrare la lista
+        syncFromSystemClipboard()
+
         val density = resources.displayMetrics.density
         clipboardListLayout.removeAllViews()
 
@@ -784,27 +869,41 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             gravity = Gravity.CENTER_VERTICAL
         }
         val header = TextView(this).apply {
-            text = if (isIncognitoActive()) "Incognito ON: sospeso" else "Appunti"
+            text = if (isIncognitoActive()) "Incognito ON" else "Appunti sistema"
             textSize = 11.5f
             setTextColor(Color.parseColor("#8E8E93"))
+        }
+        val clearBtn = TextView(this).apply {
+            text = "Svuota"
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#D1D1D6"))
+            setPadding((8 * density).toInt(), (2 * density).toInt(), (8 * density).toInt(), (2 * density).toInt())
+            setOnClickListener {
+                clipboardHistory.clear()
+                savePersistedClipboard()
+                toggleClipboardPanel()
+            }
         }
         val closeBtn = TextView(this).apply {
             text = "✕"
             textSize = 13f
             setTextColor(Color.WHITE)
-            setPadding((10 * density).toInt(), (2 * density).toInt(), (4 * density).toInt(), (2 * density).toInt())
+            setPadding((6 * density).toInt(), (2 * density).toInt(), (2 * density).toInt(), (2 * density).toInt())
             setOnClickListener {
                 clipboardPanel.visibility = View.GONE
                 rootFrame.requestLayout()
             }
         }
         headerRow.addView(header, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (clipboardHistory.isNotEmpty()) {
+            headerRow.addView(clearBtn)
+        }
         headerRow.addView(closeBtn)
         clipboardListLayout.addView(headerRow)
 
         if (clipboardHistory.isEmpty()) {
             val empty = TextView(this).apply {
-                text = "Nessun testo salvato."
+                text = "Nessun testo negli appunti."
                 textSize = 12.5f
                 setTextColor(Color.WHITE)
                 setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
@@ -817,10 +916,13 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     maxLines = 2
                     textSize = 12.5f
                     setTextColor(Color.WHITE)
-                    setBackgroundColor(Color.parseColor("#18191E"))
+                    setBackgroundColor(Color.parseColor("#16161A"))
                     setPadding((8 * density).toInt(), (7 * density).toInt(), (8 * density).toInt(), (7 * density).toInt())
                     setOnClickListener {
                         currentInputConnection?.commitText(item, 1)
+                        if (!isIncognitoActive()) {
+                            clipboardManager?.setPrimaryClip(ClipData.newPlainText("text", item))
+                        }
                         clipboardPanel.visibility = View.GONE
                         rootFrame.requestLayout()
                     }
@@ -835,6 +937,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
         }
         clipboardPanel.visibility = View.VISIBLE
+        applyIndependentPositions()
         rootFrame.requestLayout()
     }
 
@@ -891,7 +994,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
-            Toast.makeText(this, "Apri l'app Tastiera 45° per abilitare il microfono o scegliere il motore vocale.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Apri l'app per abilitare il microfono o scegliere il motore vocale.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -901,12 +1004,13 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         val tv = TextView(this).apply {
             text = "◉  Ascolto... (tocca per fermare)"
             textSize = 12.5f
-            setTextColor(Color.parseColor("#60A5FA"))
+            setTextColor(Color.WHITE)
             setPadding((6 * density).toInt(), (3 * density).toInt(), (6 * density).toInt(), (3 * density).toInt())
             setOnClickListener { stopVoiceDictation() }
         }
         swipeBarContainer.addView(tv)
         swipeBarContainer.visibility = View.VISIBLE
+        applyIndependentPositions()
         rootFrame.requestLayout()
     }
 
@@ -938,7 +1042,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     private fun activateRemoteCursor() {
-        remoteCursorOverlay.resetPositions(keyboardView.isLeftHandedMode())
+        remoteCursorOverlay.resetPositions(orbXPct < 0.5f)
         remoteCursorOverlay.visibility = View.VISIBLE
         rootFrame.requestLayout()
     }
@@ -946,18 +1050,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private fun hideRemoteCursor() {
         remoteCursorOverlay.visibility = View.GONE
         rootFrame.requestLayout()
-    }
-
-    private fun toggleHandSide() {
-        val density = resources.displayMetrics.density
-        val nextLeft = !keyboardView.isLeftHandedMode()
-        keyboardView.setLeftHanded(nextLeft)
-        applySideAndOffsetLayout(nextLeft, density)
-
-        getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean("left_handed", nextLeft)
-            .apply()
     }
 
     override fun onMoveTextCursor(steps: Int) {
@@ -1010,19 +1102,31 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         scroll.addView(row)
         swipeBarContainer.addView(scroll)
         swipeBarContainer.visibility = View.VISIBLE
+        applyIndependentPositions()
         rootFrame.requestLayout()
     }
 
-    override fun onDragFloatingKeyboard(deltaScreenY: Float) {
-        val density = resources.displayMetrics.density
-        val maxBottom = (rootFrame.height - keyboardView.height).coerceAtLeast(0)
-        bottomOffsetPx = (bottomOffsetPx - deltaScreenY.toInt()).coerceIn(0, maxBottom)
+    override fun onDragFloatingKeyboard(deltaScreenX: Float, deltaScreenY: Float) {
+        val screenW = rootFrame.width
+        val screenH = rootFrame.height
+        if (screenW <= 0 || screenH <= 0) return
 
-        applySideAndOffsetLayout(keyboardView.isLeftHandedMode(), density)
+        val kbW = keyboardView.width
+        val kbH = keyboardView.height
+        val maxKbLeft = (screenW - kbW).coerceAtLeast(1)
+        val maxKbBottom = (screenH - kbH).coerceAtLeast(0)
+
+        val currentLeft = (maxKbLeft * kbXPct).toInt()
+        val nextLeft = (currentLeft + deltaScreenX.toInt()).coerceIn(0, maxKbLeft)
+        kbXPct = (nextLeft.toFloat() / maxKbLeft.toFloat()).coerceIn(0f, 1f)
+        kbBottomOffsetPx = (kbBottomOffsetPx - deltaScreenY.toInt()).coerceIn(0, maxKbBottom)
+
+        applyIndependentPositions()
 
         getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
             .edit()
-            .putInt("kb_bottom_offset", bottomOffsetPx)
+            .putFloat("kb_x_pct", kbXPct)
+            .putInt("kb_bottom_offset", kbBottomOffsetPx)
             .apply()
     }
 }
