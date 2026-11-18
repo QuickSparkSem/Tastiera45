@@ -21,6 +21,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -58,10 +59,10 @@ class MainActivity : Activity() {
         container.addView(title)
 
         val subtitle = TextView(this).apply {
-            text = "Tastiera mobile circolare che esce dal lato dello schermo, ridimensionabile, con Remote Cursor e dettatura universale."
+            text = "Regola dimensioni, trasparenza, lato dello schermo e motore vocale."
             textSize = 14f
             setTextColor(Color.parseColor("#8E8E93"))
-            setPadding(0, (6 * density).toInt(), 0, (20 * density).toInt())
+            setPadding(0, (6 * density).toInt(), 0, (18 * density).toInt())
         }
         container.addView(subtitle)
 
@@ -95,20 +96,71 @@ class MainActivity : Activity() {
         }
         container.addView(sideBtn)
 
-        container.addView(makeActionButton("Ripristina dimensione e posizione predefinite", "#1C1C1E") {
-            prefs.edit()
-                .putFloat("kb_scale", 0.74f)
-                .putInt("kb_bottom_offset", (72 * density).toInt())
-                .apply()
-            Toast.makeText(this, "Dimensione e altezza ripristinate", Toast.LENGTH_SHORT).show()
-        })
+        // --- Regolazione Dimensioni Tastiera ---
+        val savedScale = prefs.getFloat("kb_scale", 0.74f)
+        val initialSizePct = (savedScale * 100).toInt().coerceIn(50, 95)
+        val sizeLabel = makeSectionLabel("Dimensione tastiera: $initialSizePct%")
+        container.addView(sizeLabel)
 
-        val voiceTitle = TextView(this).apply {
-            text = "Motore Dettatura Vocale (Google / Samsung / Terze parti):"
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setPadding(0, (16 * density).toInt(), 0, (8 * density).toInt())
+        val sizeSeekBar = SeekBar(this).apply {
+            max = 45 // da 50% a 95%
+            progress = initialSizePct - 50
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    val pct = 50 + value
+                    sizeLabel.text = "Dimensione tastiera: $pct%"
+                    prefs.edit().putFloat("kb_scale", pct / 100f).apply()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
         }
+        container.addView(sizeSeekBar)
+
+        // --- Regolazione Trasparenza Tastiera ---
+        val savedOpacity = prefs.getFloat("kb_alpha", 0.92f)
+        val initialOpacityPct = (savedOpacity * 100).toInt().coerceIn(15, 100)
+        val alphaLabel = makeSectionLabel("Opacità sfondo (trasparenza): $initialOpacityPct%")
+        container.addView(alphaLabel)
+
+        val alphaSeekBar = SeekBar(this).apply {
+            max = 85 // da 15% a 100%
+            progress = initialOpacityPct - 15
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    val pct = 15 + value
+                    alphaLabel.text = "Opacità sfondo (trasparenza): $pct%"
+                    prefs.edit().putFloat("kb_alpha", pct / 100f).apply()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(alphaSeekBar)
+
+        // --- Regolazione Altezza dal Fondo ---
+        val defaultBottomDp = 72
+        val currentBottomPx = prefs.getInt("kb_bottom_offset", (defaultBottomDp * density).toInt())
+        val currentBottomDp = (currentBottomPx / density).toInt().coerceIn(0, 260)
+        val heightLabel = makeSectionLabel("Altezza dal fondo dello schermo: ${currentBottomDp}dp")
+        container.addView(heightLabel)
+
+        val heightSeekBar = SeekBar(this).apply {
+            max = 260
+            progress = currentBottomDp
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    heightLabel.text = "Altezza dal fondo dello schermo: ${value}dp"
+                    prefs.edit().putInt("kb_bottom_offset", (value * density).toInt()).apply()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(heightSeekBar)
+
+        // --- Scelta Motore Dettatura Vocale ---
+        val voiceTitle = makeSectionLabel("Motore Dettatura Vocale (Google / Samsung / Terze parti):")
         container.addView(voiceTitle)
 
         loadAvailableVoiceServices()
@@ -147,8 +199,9 @@ class MainActivity : Activity() {
         }
         container.addView(spinner)
 
+        // --- Campo di prova immediato ---
         val testBox = EditText(this).apply {
-            hint = "Tocca qui per provare la tastiera circolare laterale..."
+            hint = "Tocca qui per provare la tastiera e il bottone ✦..."
             setHintTextColor(Color.parseColor("#6E6E73"))
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#141416"))
@@ -164,6 +217,16 @@ class MainActivity : Activity() {
 
         scroll.addView(container)
         setContentView(scroll)
+    }
+
+    private fun makeSectionLabel(text: String): TextView {
+        val density = resources.displayMetrics.density
+        return TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            setPadding(0, (14 * density).toInt(), 0, (6 * density).toInt())
+        }
     }
 
     private fun loadAvailableVoiceServices() {
