@@ -39,6 +39,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     private sealed class ExtraAction {
         object ToggleKeyboard : ExtraAction()
+        object SwitchLayoutStyle : ExtraAction()
         object Voice : ExtraAction()
         object Mouse : ExtraAction()
         object Clipboard : ExtraAction()
@@ -71,10 +72,10 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private var isListeningVoice = false
     private var cursorPadRect = Rect()
 
-    // Coordinate indipendenti per Tasto Magico (✦) e Tastiera Pop-up
+    // Coordinate indipendenti per Tasto Magico (✦) e Tastiera su tutto lo schermo
     private var orbXPct = 0.96f
     private var orbBottomOffsetPx = 0
-    private var kbXPct = 0.85f
+    private var kbXPct = 1.0f
     private var kbBottomOffsetPx = 0
 
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
@@ -82,6 +83,9 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     private fun isIncognitoActive(): Boolean = isAutoIncognito || isManualIncognito
+
+    // Evita che Android attivi la modalità a schermo intero coprendo l'app sottostante
+    override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -140,36 +144,49 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     override fun onCreateInputView(): View {
         val density = resources.displayMetrics.density
+        val screenH = resources.displayMetrics.heightPixels
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
 
-        val savedScale = prefs.getFloat("kb_scale", 0.82f)
-        val savedOpacity = prefs.getFloat("kb_alpha", 0.94f)
-        val savedTilt = prefs.getFloat("kb_tilt", -22f)
+        val isArcMode = prefs.getBoolean("kb_arc_mode", true)
+        val isArcLeft = prefs.getBoolean("kb_arc_left", false)
+        val savedScale = prefs.getFloat("kb_scale", 0.84f)
+        val savedOpacity = prefs.getFloat("kb_alpha", 0.12f)
+        val savedTilt = prefs.getFloat("kb_tilt", 0f)
         val savedLetterSize = prefs.getFloat("kb_letter_size", 1.0f)
         val savedKeySpacing = prefs.getFloat("kb_key_spacing", 0.25f)
+        val savedShadowStrength = prefs.getFloat("kb_shadow_strength", 0.90f)
+        val savedShadowBlur = prefs.getFloat("kb_shadow_blur", 6.5f)
         val orbOnlyStart = prefs.getBoolean("orb_only_start", true)
 
         orbXPct = prefs.getFloat("orb_x_pct", 0.96f)
         orbBottomOffsetPx = prefs.getInt("orb_bottom_offset", (36 * density).toInt())
-        kbXPct = prefs.getFloat("kb_x_pct", 0.85f)
-        kbBottomOffsetPx = prefs.getInt("kb_bottom_offset", (92 * density).toInt())
+        kbXPct = prefs.getFloat("kb_x_pct", 1.0f)
+        kbBottomOffsetPx = prefs.getInt("kb_bottom_offset", (36 * density).toInt())
 
         isKeyboardVisible = !orbOnlyStart
 
+        // Altezza pari all'intero schermo affinché la tastiera sia trascinabile ovunque in verticale e orizzontale
         rootFrame = FrameLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                screenH
+            )
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
                 applyIndependentPositions()
             }
         }
 
-        // 1. Tastiera Pop-up Scolpita (aderente alle lettere, zero nero in eccesso)
+        // 1. Tastiera (Ad Arco Concentrico dall'angolo oppure Pop-up Scolpito)
         keyboardView = AngledKeyboardView(this, this).apply {
+            setArcLayoutMode(isArcMode)
+            setArcLeftSide(isArcLeft)
             setScaleFactor(savedScale)
             setOpacity(savedOpacity)
             setTiltAngle(savedTilt)
             setLetterSizeScale(savedLetterSize)
             setKeySpacingScale(savedKeySpacing)
+            setShadowConfig(savedShadowStrength, savedShadowBlur)
             visibility = if (isKeyboardVisible) View.VISIBLE else View.GONE
         }
         val kbParams = FrameLayout.LayoutParams(
@@ -191,13 +208,13 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#F008080A"))
                 cornerRadius = 14f * density
-                setStroke((1f * density).toInt(), Color.parseColor("#303036"))
+                setStroke((1f * density).toInt(), Color.parseColor("#383840"))
             }
             setPadding((6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt())
         }
         popupColumnWrapper.addView(
             extraPanelContainer,
-            LinearLayout.LayoutParams((220 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            LinearLayout.LayoutParams((225 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = (6 * density).toInt()
             }
         )
@@ -209,7 +226,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#E608080A"))
                 cornerRadius = 12f * density
-                setStroke((1f * density).toInt(), Color.parseColor("#303036"))
+                setStroke((1f * density).toInt(), Color.parseColor("#383840"))
             }
             setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
         }
@@ -226,7 +243,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#F008080A"))
                 cornerRadius = 14f * density
-                setStroke((1f * density).toInt(), Color.parseColor("#303036"))
+                setStroke((1f * density).toInt(), Color.parseColor("#383840"))
             }
             setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
         }
@@ -290,12 +307,21 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        val screenH = resources.displayMetrics.heightPixels
+        if (::rootFrame.isInitialized && rootFrame.layoutParams?.height != screenH) {
+            rootFrame.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, screenH)
+        }
+
         val prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-        val savedScale = prefs.getFloat("kb_scale", 0.82f)
-        val savedOpacity = prefs.getFloat("kb_alpha", 0.94f)
-        val savedTilt = prefs.getFloat("kb_tilt", -22f)
+        val isArcMode = prefs.getBoolean("kb_arc_mode", true)
+        val isArcLeft = prefs.getBoolean("kb_arc_left", false)
+        val savedScale = prefs.getFloat("kb_scale", 0.84f)
+        val savedOpacity = prefs.getFloat("kb_alpha", 0.12f)
+        val savedTilt = prefs.getFloat("kb_tilt", 0f)
         val savedLetterSize = prefs.getFloat("kb_letter_size", 1.0f)
         val savedKeySpacing = prefs.getFloat("kb_key_spacing", 0.25f)
+        val savedShadowStrength = prefs.getFloat("kb_shadow_strength", 0.90f)
+        val savedShadowBlur = prefs.getFloat("kb_shadow_blur", 6.5f)
         val orbOnlyStart = prefs.getBoolean("orb_only_start", true)
 
         orbXPct = prefs.getFloat("orb_x_pct", orbXPct)
@@ -328,11 +354,14 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
 
         if (::keyboardView.isInitialized) {
+            keyboardView.setArcLayoutMode(isArcMode)
+            keyboardView.setArcLeftSide(isArcLeft)
             keyboardView.setScaleFactor(savedScale)
             keyboardView.setOpacity(savedOpacity)
             keyboardView.setTiltAngle(savedTilt)
             keyboardView.setLetterSizeScale(savedLetterSize)
             keyboardView.setKeySpacingScale(savedKeySpacing)
+            keyboardView.setShadowConfig(savedShadowStrength, savedShadowBlur)
             keyboardView.setActionType(actionName)
             keyboardView.visibility = if (isKeyboardVisible) View.VISIBLE else View.GONE
         }
@@ -371,7 +400,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
         }
 
-        // 2. Posizione autonoma Tastiera Pop-up Scolpita
+        // 2. Posizione autonoma Tastiera su tutto lo schermo (0..screenW, 0..screenH)
         val kbW = keyboardView.measuredWidth.takeIf { it > 0 } ?: (screenW * 0.7f).toInt()
         val kbH = keyboardView.measuredHeight.takeIf { it > 0 } ?: (screenW * 0.4f).toInt()
         val maxKbLeft = (screenW - kbW).coerceAtLeast(0)
@@ -415,7 +444,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         super.onComputeInsets(outInsets)
         if (!::rootFrame.isInitialized || !::cornerOrbView.isInitialized) return
 
-        val screenH = rootFrame.height
+        val screenH = rootFrame.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         if (screenH <= 0) return
 
         outInsets.contentTopInsets = screenH
@@ -434,12 +463,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             Region.Op.UNION
         )
 
-        // 2. Solo la sagoma scolpita dei tasti della Tastiera Pop-up (zero nero in eccesso)
+        // 2. Solo la sagoma esatta della tastiera (Arco o Pop-up Scolpito)
         if (keyboardView.visibility == View.VISIBLE) {
             keyboardView.appendContourToRegion(outInsets.touchableRegion, keyboardView.left, keyboardView.top)
         }
 
-        // 3. Pannelli aperti (Menu, Suggerimenti, Appunti)
+        // 3. Pannelli aperti
         if (extraPanelContainer.visibility == View.VISIBLE) {
             outInsets.touchableRegion.op(
                 Rect(
@@ -497,11 +526,11 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
 
         private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#F208080A")
+            color = Color.parseColor("#EE08080A")
             style = Paint.Style.FILL
         }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#44444A")
+            color = Color.parseColor("#606068")
             style = Paint.Style.STROKE
             strokeWidth = 2.2f
         }
@@ -520,7 +549,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             val cx = width / 2f
             val cy = height / 2f
             val r = (minOf(width, height) / 2f) - 2f
-            borderPaint.color = if (incognitoActive) Color.WHITE else Color.parseColor("#44444A")
+            borderPaint.color = if (incognitoActive) Color.WHITE else Color.parseColor("#606068")
             borderPaint.strokeWidth = if (incognitoActive) 3.2f else 2.0f
             canvas.drawCircle(cx, cy, r, bgPaint)
             canvas.drawCircle(cx, cy, r, borderPaint)
@@ -593,8 +622,11 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         extraOptionViews.clear()
         hoveredExtraAction = null
 
+        val styleLabel = if (keyboardView.isArcLayoutMode()) "◐   Stile: Pop-up Scolpito" else "◑   Stile: Arco Concentrico"
+
         val items = mutableListOf<Pair<ExtraAction, String>>(
             ExtraAction.ToggleKeyboard to if (isKeyboardVisible) "✕   Chiudi tastiera" else "⊞   Tastiera",
+            ExtraAction.SwitchLayoutStyle to styleLabel,
             ExtraAction.Voice to if (isListeningVoice) "■   Ferma dettatura" else "◉   Dettatura",
             ExtraAction.Mouse to if (remoteCursorOverlay.visibility == View.VISIBLE) "✕   Chiudi mouse" else "⌖   Mouse",
             ExtraAction.Clipboard to "⎘   Appunti",
@@ -711,6 +743,18 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             is ExtraAction.ToggleKeyboard -> {
                 isKeyboardVisible = !isKeyboardVisible
                 keyboardView.visibility = if (isKeyboardVisible) View.VISIBLE else View.GONE
+                applyIndependentPositions()
+                rootFrame.requestLayout()
+            }
+            is ExtraAction.SwitchLayoutStyle -> {
+                val nextArc = !keyboardView.isArcLayoutMode()
+                keyboardView.setArcLayoutMode(nextArc)
+                isKeyboardVisible = true
+                keyboardView.visibility = View.VISIBLE
+                getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("kb_arc_mode", nextArc)
+                    .apply()
                 applyIndependentPositions()
                 rootFrame.requestLayout()
             }
@@ -858,7 +902,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             rootFrame.requestLayout()
             return
         }
-        // Sincronizza subito con gli appunti di sistema prima di mostrare la lista
         syncFromSystemClipboard()
 
         val density = resources.displayMetrics.density
@@ -1107,8 +1150,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     override fun onDragFloatingKeyboard(deltaScreenX: Float, deltaScreenY: Float) {
-        val screenW = rootFrame.width
-        val screenH = rootFrame.height
+        val screenW = rootFrame.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val screenH = rootFrame.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         if (screenW <= 0 || screenH <= 0) return
 
         val kbW = keyboardView.width
