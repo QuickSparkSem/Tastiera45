@@ -129,7 +129,7 @@ class MainActivity : Activity() {
         }
         container.addView(cornerBtn)
 
-        addStyleSliders(container, "arc_", defaultX = 1.0f, defaultScale = 0.86f, tiltTitle = "Apertura / angolo arco", density = density)
+        addStyleSliders(container, "arc_", defaultX = 1.0f, defaultScale = 0.86f, tiltTitle = "Apertura / angolo arco", includeArcRotation = true, density = density)
 
         // =========================================================================
         // SEZIONE 2: TASTIERA POP-UP SCOLPITO
@@ -137,7 +137,7 @@ class MainActivity : Activity() {
         container.addView(divider(density))
         container.addView(groupTitle("SEZIONE 2 — TASTIERA POP-UP SCOLPITO"))
 
-        addStyleSliders(container, "popup_", defaultX = 0.50f, defaultScale = 0.82f, tiltTitle = "Inclinazione pop-up", density = density)
+        addStyleSliders(container, "popup_", defaultX = 0.50f, defaultScale = 0.82f, tiltTitle = "Inclinazione pop-up", includeArcRotation = false, density = density)
 
         // =========================================================================
         // SEZIONE 3: PULSANTE MAGICO (✦) — POSIZIONE, TASTI E ORDINE
@@ -241,7 +241,15 @@ class MainActivity : Activity() {
         if (::shortcutsList.isInitialized) refreshShortcuts()
     }
 
-    private fun addStyleSliders(container: LinearLayout, p: String, defaultX: Float, defaultScale: Float, tiltTitle: String, density: Float) {
+    private fun addStyleSliders(
+        container: LinearLayout,
+        p: String,
+        defaultX: Float,
+        defaultScale: Float,
+        tiltTitle: String,
+        includeArcRotation: Boolean,
+        density: Float
+    ) {
         addSlider(container, "Posizione orizzontale", 0, 100, (MenuPrefs.getFloat(prefs, "${p}x_pct", defaultX) * 100).toInt(), "%") {
             prefs.edit().putFloat("${p}x_pct", it / 100f).apply()
         }
@@ -253,6 +261,11 @@ class MainActivity : Activity() {
         }
         addSlider(container, tiltTitle, -90, 90, MenuPrefs.getFloat(prefs, "${p}tilt", 0f).toInt(), "°") {
             prefs.edit().putFloat("${p}tilt", it.toFloat()).apply()
+        }
+        if (includeArcRotation) {
+            addSlider(container, "Inclinazione tastiera (rotazione)", -180, 180, MenuPrefs.getFloat(prefs, "arc_rotation", 0f).toInt(), "°") {
+                prefs.edit().putFloat("arc_rotation", it.toFloat()).apply()
+            }
         }
         addSlider(container, "Grandezza delle lettere", 60, 150, (MenuPrefs.getFloat(prefs, "${p}letter_size", 1.0f) * 100).toInt(), "%") {
             prefs.edit().putFloat("${p}letter_size", it / 100f).apply()
