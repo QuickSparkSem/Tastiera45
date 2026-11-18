@@ -17,7 +17,6 @@ import android.os.Looper
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
-import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -59,11 +58,20 @@ class AngledKeyboardView(
         val textAngleDeg: Float
     )
 
+    private data class ArcMetrics(
+        val outerR: Float,
+        val hubR: Float,
+        val startDeg: Float,
+        val sweepDeg: Float,
+        val bounds: RectF
+    )
+
     private var isArcLayout = true
     private var isArcLeftSide = false
     private var scaleFactor = 0.86f
     private var bgOpacity = 0.0f
     private var tiltAngleDeg = 0f
+    private var arcRotationDeg = 0f
     private var letterSizeScale = 1.0f
     private var keySpacingScale = 0.25f
     private var shadowStrength = 0.92f
@@ -207,6 +215,7 @@ class AngledKeyboardView(
         scale: Float,
         opacity: Float,
         tiltDeg: Float,
+        arcRotDeg: Float,
         letterScale: Float,
         spacingScale: Float,
         shStrength: Float,
@@ -217,6 +226,7 @@ class AngledKeyboardView(
         scaleFactor = scale.coerceIn(0.50f, 0.98f)
         bgOpacity = opacity.coerceIn(0f, 1f)
         tiltAngleDeg = tiltDeg.coerceIn(-90f, 90f)
+        arcRotationDeg = arcRotDeg.coerceIn(-180f, 180f)
         letterSizeScale = letterScale.coerceIn(0.60f, 1.50f)
         keySpacingScale = spacingScale.coerceIn(0f, 1f)
         shadowStrength = shStrength.coerceIn(0f, 1f)
@@ -301,14 +311,63 @@ class AngledKeyboardView(
         )
     }
 
+    private fun isAngleInSweep(angleDeg: Float, startDeg: Float, sweepDeg: Float): Boolean {
+        val normAngle = ((angleDeg % 360f) + 360f) % 360f
+        val normStart = ((startDeg % 360f) + 360f) % 360f
+        val diff = ((normAngle - normStart) % 360f + 360f) % 360f
+        return diff <= sweepDeg
+    }
+
+    private fun computeArcMetrics(): ArcMetrics {
+        val density = resources.displayMetrics.density
+        val screenW = resources.displayMetrics.widthPixels.coerceAtLeast(320)
+        val outerR = (screenW * scaleFactor * 0.96f).coerceAtLeast(200f * density)
+        val hubR = (outerR * 0.24f).coerceAtLeast(20f * density)
+
+        val sweep = (86f + tiltAngleDeg * 0.24f).coerceIn(64f, 90f)
+        val halfSpare = ((90f - sweep) / 2f).coerceAtLeast(0f)
+        val tiltShift = (tiltAngleDeg / 90f) * halfSpare
+        val baseStart = if (isArcLeftSide) 270f else 180f
+        val startDeg = baseStart + halfSpare + tiltShift + arcRotationDeg
+
+        val innerR = hubR * 0.35f
+        val endDeg = startDeg + sweep
+        val xs = mutableListOf<Float>()
+        val ys = mutableListOf<Float>()
+        for (deg in listOf(startDeg, endDeg)) {
+            val rad = Math.toRadians(deg.toDouble())
+            val c = cos(rad).toFloat()
+            val s = sin(rad).toFloat()
+            xs.add(innerR * c); ys.add(innerR * s)
+            xs.add(outerR * c); ys.add(outerR * s)
+        }
+        for (cardinal in listOf(0f, 90f, 180f, 270f)) {
+            if (isAngleInSweep(cardinal, startDeg, sweep)) {
+                val rad = Math.toRadians(cardinal.toDouble())
+                xs.add(outerR * cos(rad).toFloat())
+                ys.add(outerR * sin(rad).toFloat())
+            }
+        }
+        val bounds = RectF(
+            xs.minOrNull() ?: -outerR,
+            ys.minOrNull() ?: -outerR,
+            xs.maxOrNull() ?: outerR,
+            ys.maxOrNull() ?: outerR
+        )
+        return ArcMetrics(outerR, hubR, startDeg, sweep, bounds)
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val density = resources.displayMetrics.density
         val screenW = resources.displayMetrics.widthPixels.coerceAtLeast(320)
 
         if (isArcLayout) {
-            val radius = (screenW * scaleFactor * 0.96f).coerceAtLeast(200f * density)
-            val size = ceil(radius + 16f * density).toInt().coerceAtLeast(1)
-            setMeasuredDimension(size, size)
+            val pad = 10f * density
+            val m = computeArcMetrics()
+            setMeasuredDimension(
+                ceil(m.bounds.width() + pad * 2f).toInt().coerceAtLeast(1),
+                ceil(m.bounds.height() + pad * 2f).toInt().coerceAtLeast(1)
+            )
         } else {
             popupWidth = (screenW * scaleFactor).coerceAtLeast(210f * density)
             val vGap = 10f * density * keySpacingScale
@@ -334,8 +393,7 @@ class AngledKeyboardView(
     }
 
     private fun rebuildGeometry() {
-        if (width <= 0 || height <= 0) return
-        if (isArcLayout) rebuildArcLayout() else rebuildPopupLayout()
+        if (isArcLayout) rebuildArcLayout() else if (width > 0 && height > 0) rebuildPopupLayout()
     }
 
     private fun rebuildArcLayout() {
@@ -344,25 +402,15 @@ class AngledKeyboardView(
         arcContourPath.reset()
 
         val density = resources.displayMetrics.density
-        val pad = 8f * density
-        arcOuterR = (minOf(width, height) - pad * 2f).coerceAtLeast(80f * density)
-        arcHubR = (arcOuterR * 0.24f).coerceAtLeast(20f * density)
+        val pad = 10f * density
+        val m = computeArcMetrics()
 
-        // Calcolo angolo sicuro: mai range invertiti, regola apertura e orientamento nel quadrante
-        val sweep = (86f + tiltAngleDeg * 0.24f).coerceIn(64f, 90f)
-        val halfSpare = ((90f - sweep) / 2f).coerceAtLeast(0f)
-        val tiltShift = (tiltAngleDeg / 90f) * halfSpare
-
-        arcFanSweepDeg = sweep
-        if (isArcLeftSide) {
-            arcCenterX = pad
-            arcCenterY = height - pad
-            arcFanStartDeg = 270f + halfSpare + tiltShift
-        } else {
-            arcCenterX = width - pad
-            arcCenterY = height - pad
-            arcFanStartDeg = 180f + halfSpare + tiltShift
-        }
+        arcOuterR = m.outerR
+        arcHubR = m.hubR
+        arcFanStartDeg = m.startDeg
+        arcFanSweepDeg = m.sweepDeg
+        arcCenterX = -m.bounds.left + pad
+        arcCenterY = -m.bounds.top + pad
 
         val outerOval = RectF(arcCenterX - arcOuterR, arcCenterY - arcOuterR, arcCenterX + arcOuterR, arcCenterY + arcOuterR)
         val innerHubR = arcHubR * 0.35f
@@ -538,7 +586,7 @@ class AngledKeyboardView(
             canvas.restore()
         }
 
-        // Punto di presa nell'angolo per trascinare l'arco ovunque
+        // Punto di presa (pivot di rotazione e trascinamento dell'arco)
         val gripRad = Math.toRadians((arcFanStartDeg + arcFanSweepDeg / 2f).toDouble())
         val gx = arcCenterX + (arcHubR * 0.55f * cos(gripRad)).toFloat()
         val gy = arcCenterY + (arcHubR * 0.55f * sin(gripRad)).toFloat()
@@ -561,7 +609,6 @@ class AngledKeyboardView(
             canvas.drawPath(localContourPath, bgPaint)
         }
 
-        // Maniglia superiore con ombra nera (senza contorno tastiera)
         drawUnderShadow(canvas, dragHandleRect.centerX(), dragHandleRect.top + 9.5f * density, 14f * density, density)
         val pw = dragHandleRect.width() * 0.48f
         val ph = 3.5f * density
@@ -706,7 +753,6 @@ class AngledKeyboardView(
             letterCenters.values.filter { it !== p }.minOfOrNull { hypot(p.x - it.x, p.y - it.y) }
         }.average().toFloat().coerceAtLeast(14f)
 
-        // Ricampiona traiettoria a passo fitto e rinforza partenza, svolte e arrivo
         val step = (keyStep * 0.25f).coerceAtLeast(4f)
         val dense = mutableListOf(swipePoints.first())
         for (i in 1 until swipePoints.size) {
