@@ -50,56 +50,59 @@ class MainActivity : Activity() {
         }
 
         val title = TextView(this).apply {
-            text = "Tastiera 45° AMOLED"
-            textSize = 26f
+            text = "Tastiera Laterale Circolare"
+            textSize = 25f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
         }
         container.addView(title)
 
         val subtitle = TextView(this).apply {
-            text = "Tastiera ergonomica ad una mano, dettatura universale e Remote Cursor."
+            text = "Tastiera mobile circolare che esce dal lato dello schermo, ridimensionabile, con Remote Cursor e dettatura universale."
             textSize = 14f
             setTextColor(Color.parseColor("#8E8E93"))
             setPadding(0, (6 * density).toInt(), 0, (20 * density).toInt())
         }
         container.addView(subtitle)
 
-        // Passo 1: Attiva tastiera
-        container.addView(makeActionButton("1. Attiva Tastiera 45° nelle Impostazioni", "#4B7BD6") {
+        container.addView(makeActionButton("1. Attiva Tastiera nelle Impostazioni", "#4B7BD6") {
             startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
         })
 
-        // Passo 2: Seleziona tastiera
-        container.addView(makeActionButton("2. Scegli Tastiera 45° come predefinita", "#1C1C1E") {
+        container.addView(makeActionButton("2. Seleziona come tastiera attiva", "#1C1C1E") {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.showInputMethodPicker()
         })
 
-        // Passo 3: Attiva Remote Cursor (Mouse)
         container.addView(makeActionButton("3. Attiva permesso Remote Cursor (Mouse)", "#1C1C1E") {
             Toast.makeText(this, "Trova 'Tastiera 45° - Remote Cursor' e attivalo", Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         })
 
-        // Passo 4: Mano predefinita (Destra 45° / Sinistra 45°)
-        val handBtn = makeActionButton(
-            if (prefs.getBoolean("left_handed", false)) "Mano attuale: SINISTRA (45° in basso a sinistra)"
-            else "Mano attuale: DESTRA (45° in basso a destra)",
+        val sideBtn = makeActionButton(
+            if (prefs.getBoolean("left_handed", false)) "Lato attuale: SINISTRO (esce da sinistra)"
+            else "Lato attuale: DESTRO (esce da destra)",
             "#1C1C1E"
         ) {}
-        handBtn.setOnClickListener {
+        sideBtn.setOnClickListener {
             val next = !prefs.getBoolean("left_handed", false)
             prefs.edit().putBoolean("left_handed", next).apply()
-            handBtn.text = if (next) {
-                "Mano attuale: SINISTRA (45° in basso a sinistra)"
+            sideBtn.text = if (next) {
+                "Lato attuale: SINISTRO (esce da sinistra)"
             } else {
-                "Mano attuale: DESTRA (45° in basso a destra)"
+                "Lato attuale: DESTRO (esce da destra)"
             }
         }
-        container.addView(handBtn)
+        container.addView(sideBtn)
 
-        // Passo 5: Scelta motore di dettatura vocale (Google, Samsung, Terze parti)
+        container.addView(makeActionButton("Ripristina dimensione e posizione predefinite", "#1C1C1E") {
+            prefs.edit()
+                .putFloat("kb_scale", 0.74f)
+                .putInt("kb_bottom_offset", (72 * density).toInt())
+                .apply()
+            Toast.makeText(this, "Dimensione e altezza ripristinate", Toast.LENGTH_SHORT).show()
+        })
+
         val voiceTitle = TextView(this).apply {
             text = "Motore Dettatura Vocale (Google / Samsung / Terze parti):"
             textSize = 14f
@@ -144,9 +147,8 @@ class MainActivity : Activity() {
         }
         container.addView(spinner)
 
-        // Campo di prova immediato
         val testBox = EditText(this).apply {
-            hint = "Tocca qui per provare subito la Tastiera 45°..."
+            hint = "Tocca qui per provare la tastiera circolare laterale..."
             setHintTextColor(Color.parseColor("#6E6E73"))
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#141416"))
