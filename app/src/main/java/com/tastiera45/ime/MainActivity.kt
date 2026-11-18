@@ -62,7 +62,7 @@ class MainActivity : Activity() {
         }
 
         val title = TextView(this).apply {
-            text = "Tastiera Tonda Ergonomica"
+            text = "Tastiera Pop-up Minimal"
             textSize = 24f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
@@ -70,66 +70,140 @@ class MainActivity : Activity() {
         container.addView(title)
 
         val subtitle = TextView(this).apply {
-            text = "Personalizza tasto singolo nell'angolo, grandezza lettere, spazi, inclinazione e scorciatoie."
+            text = "Regola in modo autonomo la posizione del tasto ✦, della tastiera pop-up, l'inclinazione, le lettere e le scorciatoie."
             textSize = 13.5f
             setTextColor(Color.parseColor("#8E8E93"))
             setPadding(0, (6 * density).toInt(), 0, (18 * density).toInt())
         }
         container.addView(subtitle)
 
-        container.addView(makeActionButton("1. Attiva Tastiera nelle Impostazioni", "#4B7BD6") {
+        container.addView(makeActionButton("1. Attiva Tastiera nelle Impostazioni", "#FFFFFF", "#000000") {
             startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
         })
 
-        container.addView(makeActionButton("2. Seleziona come tastiera attiva", "#16171C") {
+        container.addView(makeActionButton("2. Seleziona come tastiera attiva", "#141417", "#FFFFFF") {
             val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.showInputMethodPicker()
         })
 
-        container.addView(makeActionButton("3. Attiva permesso Remote Cursor (Mouse)", "#16171C") {
+        container.addView(makeActionButton("3. Attiva permesso Remote Cursor (Mouse)", "#141417", "#FFFFFF") {
             Toast.makeText(this, "Trova 'Tastiera 45° - Remote Cursor' e attivalo", Toast.LENGTH_LONG).show()
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         })
 
-        // --- Modalità di comparsa nell'angolo ---
+        // --- Modalità di comparsa ---
         val orbModeBtn = makeActionButton(
             if (prefs.getBoolean("orb_only_start", true))
-                "Avvio campo testo: SOLO TASTO ✦ NELL'ANGOLO"
+                "Avvio campo testo: SOLO TASTO MAGICO ✦"
             else
-                "Avvio campo testo: TASTIERA TONDA SUBITO APERTA",
-            "#16171C"
+                "Avvio campo testo: TASTIERA POP-UP SUBITO APERTA",
+            "#141417",
+            "#FFFFFF"
         ) {}
         orbModeBtn.setOnClickListener {
             val next = !prefs.getBoolean("orb_only_start", true)
             prefs.edit().putBoolean("orb_only_start", next).apply()
             orbModeBtn.text = if (next) {
-                "Avvio campo testo: SOLO TASTO ✦ NELL'ANGOLO"
+                "Avvio campo testo: SOLO TASTO MAGICO ✦"
             } else {
-                "Avvio campo testo: TASTIERA TONDA SUBITO APERTA"
+                "Avvio campo testo: TASTIERA POP-UP SUBITO APERTA"
             }
         }
         container.addView(orbModeBtn)
 
-        // --- Lato Destro / Sinistro ---
-        val sideBtn = makeActionButton(
-            if (prefs.getBoolean("left_handed", false)) "Lato attuale: SINISTRO"
-            else "Lato attuale: DESTRO",
-            "#16171C"
-        ) {}
-        sideBtn.setOnClickListener {
-            val next = !prefs.getBoolean("left_handed", false)
-            prefs.edit().putBoolean("left_handed", next).apply()
-            sideBtn.text = if (next) "Lato attuale: SINISTRO" else "Lato attuale: DESTRO"
-        }
-        container.addView(sideBtn)
+        // =========================================================================
+        // SEZIONE A: POSIZIONE AUTONOMA TASTO MAGICO (✦)
+        // =========================================================================
+        container.addView(makeGroupTitle("POSIZIONE TASTO MAGICO (✦)"))
 
-        // --- Slider Inclinazione Tastiera e Tasti (-90° a +90°) ---
-        val savedTilt = prefs.getFloat("kb_tilt", -28f).toInt().coerceIn(-90, 90)
+        val orbXPct = (prefs.getFloat("orb_x_pct", 0.96f) * 100).toInt().coerceIn(0, 100)
+        val orbXLabel = makeSectionLabel("Posizione orizzontale tasto ✦: $orbXPct% (0=Sinistra, 100=Destra)")
+        container.addView(orbXLabel)
+
+        val orbXSeek = SeekBar(this).apply {
+            max = 100
+            progress = orbXPct
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    orbXLabel.text = "Posizione orizzontale tasto ✦: $value% (0=Sinistra, 100=Destra)"
+                    prefs.edit().putFloat("orb_x_pct", value / 100f).apply()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(orbXSeek)
+
+        val orbBottomDp = (prefs.getInt("orb_bottom_offset", (36 * density).toInt()) / density).toInt().coerceIn(0, 520)
+        val orbYLabel = makeSectionLabel("Altezza dal basso tasto ✦: ${orbBottomDp}dp")
+        container.addView(orbYLabel)
+
+        val orbYSeek = SeekBar(this).apply {
+            max = 520
+            progress = orbBottomDp
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    orbYLabel.text = "Altezza dal basso tasto ✦: ${value}dp"
+                    prefs.edit().putInt("orb_bottom_offset", (value * density).toInt()).apply()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(orbYSeek)
+
+        // =========================================================================
+        // SEZIONE B: POSIZIONE AUTONOMA TASTIERA POP-UP
+        // =========================================================================
+        container.addView(makeGroupTitle("POSIZIONE TASTIERA POP-UP (INDIPENDENTE)"))
+
+        val kbXPct = (prefs.getFloat("kb_x_pct", 0.85f) * 100).toInt().coerceIn(0, 100)
+        val kbXLabel = makeSectionLabel("Posizione orizzontale tastiera: $kbXPct% (50=Centro)")
+        container.addView(kbXLabel)
+
+        val kbXSeek = SeekBar(this).apply {
+            max = 100
+            progress = kbXPct
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    kbXLabel.text = "Posizione orizzontale tastiera: $value% (50=Centro)"
+                    prefs.edit().putFloat("kb_x_pct", value / 100f).apply()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(kbXSeek)
+
+        val kbBottomDp = (prefs.getInt("kb_bottom_offset", (92 * density).toInt()) / density).toInt().coerceIn(0, 520)
+        val kbYLabel = makeSectionLabel("Altezza dal basso tastiera: ${kbBottomDp}dp")
+        container.addView(kbYLabel)
+
+        val kbYSeek = SeekBar(this).apply {
+            max = 520
+            progress = kbBottomDp
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    kbYLabel.text = "Altezza dal basso tastiera: ${value}dp"
+                    prefs.edit().putInt("kb_bottom_offset", (value * density).toInt()).apply()
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        container.addView(kbYSeek)
+
+        // =========================================================================
+        // SEZIONE C: ASPETTO, INCLINAZIONE, LETTERE E SPAZIATURA
+        // =========================================================================
+        container.addView(makeGroupTitle("ASPETTO E DIMENSIONI TASTIERA"))
+
+        val savedTilt = prefs.getFloat("kb_tilt", -22f).toInt().coerceIn(-90, 90)
         val tiltLabel = makeSectionLabel("Inclinazione tastiera e tasti: ${savedTilt}°")
         container.addView(tiltLabel)
 
         val tiltSeekBar = SeekBar(this).apply {
-            max = 180 // da -90° a +90°
+            max = 180
             progress = savedTilt + 90
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
@@ -143,14 +217,13 @@ class MainActivity : Activity() {
         }
         container.addView(tiltSeekBar)
 
-        // --- Slider Grandezza delle Lettere ---
         val savedLetterSize = prefs.getFloat("kb_letter_size", 1.0f)
         val initialLetterPct = (savedLetterSize * 100).toInt().coerceIn(60, 150)
         val letterLabel = makeSectionLabel("Grandezza delle lettere: $initialLetterPct%")
         container.addView(letterLabel)
 
         val letterSeekBar = SeekBar(this).apply {
-            max = 90 // da 60% a 150%
+            max = 90
             progress = initialLetterPct - 60
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
@@ -164,14 +237,13 @@ class MainActivity : Activity() {
         }
         container.addView(letterSeekBar)
 
-        // --- Slider Spazio tra Lettere ed Elementi ---
         val savedSpacing = prefs.getFloat("kb_key_spacing", 0.25f)
         val initialSpacingPct = (savedSpacing * 100).toInt().coerceIn(0, 100)
         val spacingLabel = makeSectionLabel("Spazio tra lettere ed elementi: $initialSpacingPct%")
         container.addView(spacingLabel)
 
         val spacingSeekBar = SeekBar(this).apply {
-            max = 100 // da 0% a 100%
+            max = 100
             progress = initialSpacingPct
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
@@ -184,19 +256,18 @@ class MainActivity : Activity() {
         }
         container.addView(spacingSeekBar)
 
-        // --- Slider Dimensione Cerchio Tastiera ---
-        val savedScale = prefs.getFloat("kb_scale", 0.80f)
-        val initialSizePct = (savedScale * 100).toInt().coerceIn(52, 98)
-        val sizeLabel = makeSectionLabel("Dimensione cerchio tastiera: $initialSizePct%")
+        val savedScale = prefs.getFloat("kb_scale", 0.82f)
+        val initialSizePct = (savedScale * 100).toInt().coerceIn(50, 98)
+        val sizeLabel = makeSectionLabel("Dimensione generale tastiera: $initialSizePct%")
         container.addView(sizeLabel)
 
         val sizeSeekBar = SeekBar(this).apply {
-            max = 46 // da 52% a 98%
-            progress = initialSizePct - 52
+            max = 48
+            progress = initialSizePct - 50
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                    val pct = 52 + value
-                    sizeLabel.text = "Dimensione cerchio tastiera: $pct%"
+                    val pct = 50 + value
+                    sizeLabel.text = "Dimensione generale tastiera: $pct%"
                     prefs.edit().putFloat("kb_scale", pct / 100f).apply()
                 }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
@@ -205,19 +276,18 @@ class MainActivity : Activity() {
         }
         container.addView(sizeSeekBar)
 
-        // --- Slider Trasparenza Tastiera ---
-        val savedOpacity = prefs.getFloat("kb_alpha", 0.92f)
+        val savedOpacity = prefs.getFloat("kb_alpha", 0.94f)
         val initialOpacityPct = (savedOpacity * 100).toInt().coerceIn(15, 100)
-        val alphaLabel = makeSectionLabel("Opacità sfondo: $initialOpacityPct%")
+        val alphaLabel = makeSectionLabel("Opacità sfondo nero: $initialOpacityPct%")
         container.addView(alphaLabel)
 
         val alphaSeekBar = SeekBar(this).apply {
-            max = 85 // da 15% a 100%
+            max = 85
             progress = initialOpacityPct - 15
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
                     val pct = 15 + value
-                    alphaLabel.text = "Opacità sfondo: $pct%"
+                    alphaLabel.text = "Opacità sfondo nero: $pct%"
                     prefs.edit().putFloat("kb_alpha", pct / 100f).apply()
                 }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
@@ -226,62 +296,39 @@ class MainActivity : Activity() {
         }
         container.addView(alphaSeekBar)
 
-        // --- Slider Altezza dal Fondo ---
-        val defaultBottomDp = 42
-        val currentBottomPx = prefs.getInt("kb_bottom_offset", (defaultBottomDp * density).toInt())
-        val currentBottomDp = (currentBottomPx / density).toInt().coerceIn(0, 260)
-        val heightLabel = makeSectionLabel("Distanza dal bordo inferiore: ${currentBottomDp}dp")
-        container.addView(heightLabel)
+        // =========================================================================
+        // SEZIONE D: SCORCIATOIE PERSONALIZZATE NEL MENU ✦
+        // =========================================================================
+        container.addView(makeGroupTitle("SCORCIATOIE NEL MENU ✦"))
 
-        val heightSeekBar = SeekBar(this).apply {
-            max = 260
-            progress = currentBottomDp
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                    heightLabel.text = "Distanza dal bordo inferiore: ${value}dp"
-                    prefs.edit().putInt("kb_bottom_offset", (value * density).toInt()).apply()
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        container.addView(heightSeekBar)
-
-        // --- Sezione Tasti Personalizzati / Shortcut Maker / Samsung Assist ---
-        container.addView(makeSectionLabel("Scorciatoie personalizzate nel menu ✦:"))
-
-        // 1. Tasto rapido Assistente di Scrittura Samsung
-        container.addView(makeActionButton("+ Assistente di Scrittura Samsung", "#1E222D") {
+        container.addView(makeActionButton("+ Assistente di Scrittura Samsung", "#141417", "#FFFFFF") {
             val current = loadShortcuts().toMutableList()
             current.add(StoredShortcut("SAMSUNG_ASSIST", "Assistente Samsung", "samsung_writing_assist"))
             saveShortcuts(current)
             refreshShortcutsList()
-            Toast.makeText(this, "Assistente di Scrittura Samsung aggiunto al menu ✦", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Assistente Samsung aggiunto al menu ✦", Toast.LENGTH_SHORT).show()
         })
 
-        // 2. Importa da Shortcut Maker o altre app di scorciatoie Android
-        container.addView(makeActionButton("+ Scegli da Shortcut Maker / Scorciatoie App", "#1E222D") {
+        container.addView(makeActionButton("+ Scegli da Shortcut Maker / Scorciatoie", "#141417", "#FFFFFF") {
             try {
                 val pickIntent = Intent(Intent.ACTION_CREATE_SHORTCUT)
                 val chooser = Intent.createChooser(pickIntent, "Scegli scorciatoia (es. Shortcut Maker)")
                 @Suppress("DEPRECATION")
                 startActivityForResult(chooser, REQ_PICK_SHORTCUT)
             } catch (_: Exception) {
-                Toast.makeText(this, "Nessuna app di scorciatoie (es. Shortcut Maker) trovata", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Nessuna app di scorciatoie trovata", Toast.LENGTH_SHORT).show()
             }
         })
 
-        // 3. Scegli un'App installata da aprire
-        container.addView(makeActionButton("+ Scegli un'App da avviare", "#1E222D") {
+        container.addView(makeActionButton("+ Scegli un'App da avviare", "#141417", "#FFFFFF") {
             showInstalledAppsDialog()
         })
 
-        // 4. Aggiungi testo rapido
         val shortcutNameInput = EditText(this).apply {
-            hint = "Nome testo rapido (es. Email, Indirizzo)"
+            hint = "Nome testo rapido (es. Email, Saluto)"
             setHintTextColor(Color.parseColor("#6E6E73"))
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#141519"))
+            setBackgroundColor(Color.parseColor("#121215"))
             setPadding((12 * density).toInt(), (12 * density).toInt(), (12 * density).toInt(), (12 * density).toInt())
         }
         val nameParams = LinearLayout.LayoutParams(
@@ -297,7 +344,7 @@ class MainActivity : Activity() {
             hint = "Testo da inserire (es. mario@gmail.com)"
             setHintTextColor(Color.parseColor("#6E6E73"))
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#141519"))
+            setBackgroundColor(Color.parseColor("#121215"))
             setPadding((12 * density).toInt(), (12 * density).toInt(), (12 * density).toInt(), (12 * density).toInt())
         }
         val textParams = LinearLayout.LayoutParams(
@@ -312,7 +359,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
 
-        container.addView(makeActionButton("+ Aggiungi testo rapido al menu ✦", "#1F222A") {
+        container.addView(makeActionButton("+ Aggiungi testo rapido al menu ✦", "#1C1C20", "#FFFFFF") {
             val label = shortcutNameInput.text.toString().trim()
             val textVal = shortcutTextInput.text.toString()
             if (label.isEmpty() || textVal.isEmpty()) {
@@ -332,13 +379,14 @@ class MainActivity : Activity() {
         refreshShortcutsList()
 
         // --- Scelta Motore Dettatura Vocale ---
+        container.addView(makeGroupTitle("DETTATURA VOCALE"))
         val voiceTitle = makeSectionLabel("Motore Dettatura Vocale (Google / Samsung / Terze parti):")
         container.addView(voiceTitle)
 
         loadAvailableVoiceServices()
 
         val spinner = Spinner(this).apply {
-            setBackgroundColor(Color.parseColor("#16171C"))
+            setBackgroundColor(Color.parseColor("#141417"))
         }
         val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, voiceLabels) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
@@ -351,7 +399,7 @@ class MainActivity : Activity() {
             override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val v = super.getDropDownView(position, convertView, parent) as TextView
                 v.setTextColor(Color.WHITE)
-                v.setBackgroundColor(Color.parseColor("#16171C"))
+                v.setBackgroundColor(Color.parseColor("#141417"))
                 v.setPadding((14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt())
                 return v
             }
@@ -373,10 +421,10 @@ class MainActivity : Activity() {
 
         // --- Campo di prova ---
         val testBox = EditText(this).apply {
-            hint = "Tocca qui per provare il tasto ✦ nell'angolo..."
+            hint = "Tocca qui per provare il tasto ✦ e la tastiera pop-up..."
             setHintTextColor(Color.parseColor("#6E6E73"))
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#141519"))
+            setBackgroundColor(Color.parseColor("#121215"))
             setPadding((14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt())
         }
         val boxParams = LinearLayout.LayoutParams(
@@ -406,7 +454,7 @@ class MainActivity : Activity() {
                 current.add(StoredShortcut("INTENT_URI", label, uriString))
                 saveShortcuts(current)
                 refreshShortcutsList()
-                Toast.makeText(this, "Scorciatoia '$label' importata nel menu ✦", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Scorciatoia '$label' aggiunta", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -431,14 +479,14 @@ class MainActivity : Activity() {
 
         val names = resolved.map { it.first }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Scegli un'App da aggiungere al menu ✦")
+            .setTitle("Scegli un'App per il menu ✦")
             .setItems(names) { _, which ->
                 val (appName, pkgName) = resolved[which]
                 val current = loadShortcuts().toMutableList()
                 current.add(StoredShortcut("APP", appName, pkgName))
                 saveShortcuts(current)
                 refreshShortcutsList()
-                Toast.makeText(this, "App '$appName' aggiunta al menu ✦", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "App '$appName' aggiunta", Toast.LENGTH_SHORT).show()
             }
             .show()
     }
@@ -471,7 +519,7 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#121317"))
+                    setColor(Color.parseColor("#121215"))
                     cornerRadius = 10f * density
                 }
                 setPadding((12 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
@@ -518,13 +566,24 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun makeGroupTitle(text: String): TextView {
+        val density = resources.displayMetrics.density
+        return TextView(this).apply {
+            this.text = text
+            textSize = 11.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#8E8E93"))
+            setPadding(0, (20 * density).toInt(), 0, (4 * density).toInt())
+        }
+    }
+
     private fun makeSectionLabel(text: String): TextView {
         val density = resources.displayMetrics.density
         return TextView(this).apply {
             this.text = text
             textSize = 13.5f
             setTextColor(Color.WHITE)
-            setPadding(0, (14 * density).toInt(), 0, (6 * density).toInt())
+            setPadding(0, (10 * density).toInt(), 0, (4 * density).toInt())
         }
     }
 
@@ -548,16 +607,17 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun makeActionButton(label: String, bgHex: String, onClick: () -> Unit): Button {
+    private fun makeActionButton(label: String, bgHex: String, textHex: String, onClick: () -> Unit): Button {
         val density = resources.displayMetrics.density
         return Button(this).apply {
             text = label
             isAllCaps = false
             textSize = 14f
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor(textHex))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor(bgHex))
                 cornerRadius = 12f * density
+                setStroke((1f * density).toInt(), Color.parseColor("#323236"))
             }
             setPadding((14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(
