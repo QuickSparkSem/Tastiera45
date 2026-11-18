@@ -42,11 +42,26 @@ class MainActivity : Activity() {
     private lateinit var shortcutsListContainer: LinearLayout
     private lateinit var prefs: SharedPreferences
 
+    private fun safeFloat(key: String, def: Float): Float =
+        try { prefs.getFloat(key, def) } catch (_: Throwable) { def }
+
+    private fun safeInt(key: String, def: Int): Int =
+        try { prefs.getInt(key, def) } catch (_: Throwable) { def }
+
+    private fun safeBool(key: String, def: Boolean): Boolean =
+        try { prefs.getBoolean(key, def) } catch (_: Throwable) { def }
+
+    private fun safeString(key: String, def: String?): String? =
+        try { prefs.getString(key, def) } catch (_: Throwable) { def }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 101)
+        try {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 101)
+            }
+        } catch (_: Throwable) {
         }
 
         val density = resources.displayMetrics.density
@@ -78,17 +93,26 @@ class MainActivity : Activity() {
         container.addView(subtitle)
 
         container.addView(makeActionButton("1. Attiva Tastiera nelle Impostazioni", "#FFFFFF", "#000000") {
-            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+            try {
+                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+            } catch (_: Throwable) {
+            }
         })
 
         container.addView(makeActionButton("2. Seleziona come tastiera attiva", "#141417", "#FFFFFF") {
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showInputMethodPicker()
+            try {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.showInputMethodPicker()
+            } catch (_: Throwable) {
+            }
         })
 
         container.addView(makeActionButton("3. Attiva permesso Remote Cursor (Mouse)", "#141417", "#FFFFFF") {
             Toast.makeText(this, "Trova 'Tastiera 45° - Remote Cursor' e attivalo", Toast.LENGTH_LONG).show()
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            try {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } catch (_: Throwable) {
+            }
         })
 
         // =========================================================================
@@ -97,7 +121,7 @@ class MainActivity : Activity() {
         container.addView(makeGroupTitle("STILE LAYOUT TASTIERA"))
 
         val layoutStyleBtn = makeActionButton(
-            if (prefs.getBoolean("kb_arc_mode", true))
+            if (safeBool("kb_arc_mode", true))
                 "Layout: AD ARCO CONCENTRICO DALL'ANGOLO"
             else
                 "Layout: POP-UP SCOLPITO FLUTTUANTE",
@@ -105,7 +129,7 @@ class MainActivity : Activity() {
             "#FFFFFF"
         ) {}
         layoutStyleBtn.setOnClickListener {
-            val next = !prefs.getBoolean("kb_arc_mode", true)
+            val next = !safeBool("kb_arc_mode", true)
             prefs.edit().putBoolean("kb_arc_mode", next).apply()
             layoutStyleBtn.text = if (next) {
                 "Layout: AD ARCO CONCENTRICO DALL'ANGOLO"
@@ -116,7 +140,7 @@ class MainActivity : Activity() {
         container.addView(layoutStyleBtn)
 
         val arcCornerBtn = makeActionButton(
-            if (prefs.getBoolean("kb_arc_left", false))
+            if (safeBool("kb_arc_left", false))
                 "Angolo arco: SINISTRO"
             else
                 "Angolo arco: DESTRO",
@@ -124,14 +148,14 @@ class MainActivity : Activity() {
             "#FFFFFF"
         ) {}
         arcCornerBtn.setOnClickListener {
-            val next = !prefs.getBoolean("kb_arc_left", false)
+            val next = !safeBool("kb_arc_left", false)
             prefs.edit().putBoolean("kb_arc_left", next).apply()
             arcCornerBtn.text = if (next) "Angolo arco: SINISTRO" else "Angolo arco: DESTRO"
         }
         container.addView(arcCornerBtn)
 
         val orbModeBtn = makeActionButton(
-            if (prefs.getBoolean("orb_only_start", true))
+            if (safeBool("orb_only_start", true))
                 "Avvio campo testo: SOLO TASTO MAGICO ✦"
             else
                 "Avvio campo testo: TASTIERA SUBITO APERTA",
@@ -139,7 +163,7 @@ class MainActivity : Activity() {
             "#FFFFFF"
         ) {}
         orbModeBtn.setOnClickListener {
-            val next = !prefs.getBoolean("orb_only_start", true)
+            val next = !safeBool("orb_only_start", true)
             prefs.edit().putBoolean("orb_only_start", next).apply()
             orbModeBtn.text = if (next) {
                 "Avvio campo testo: SOLO TASTO MAGICO ✦"
@@ -154,7 +178,7 @@ class MainActivity : Activity() {
         // =========================================================================
         container.addView(makeGroupTitle("OMBRA LETTERE E LEGGIBILITÀ"))
 
-        val savedShadowStrength = prefs.getFloat("kb_shadow_strength", 0.90f)
+        val savedShadowStrength = safeFloat("kb_shadow_strength", 0.90f)
         val initialShadowPct = (savedShadowStrength * 100).toInt().coerceIn(0, 100)
         val shadowStrengthLabel = makeSectionLabel("Intensità ombra sotto le lettere: $initialShadowPct%")
         container.addView(shadowStrengthLabel)
@@ -173,7 +197,7 @@ class MainActivity : Activity() {
         }
         container.addView(shadowStrengthSeek)
 
-        val savedShadowBlur = prefs.getFloat("kb_shadow_blur", 6.5f).toInt().coerceIn(0, 16)
+        val savedShadowBlur = safeFloat("kb_shadow_blur", 6.5f).toInt().coerceIn(0, 16)
         val shadowBlurLabel = makeSectionLabel("Ampiezza / sfocatura ombra: ${savedShadowBlur}dp")
         container.addView(shadowBlurLabel)
 
@@ -196,7 +220,7 @@ class MainActivity : Activity() {
         // =========================================================================
         container.addView(makeGroupTitle("POSIZIONE TASTO MAGICO (✦)"))
 
-        val orbXPct = (prefs.getFloat("orb_x_pct", 0.96f) * 100).toInt().coerceIn(0, 100)
+        val orbXPct = (safeFloat("orb_x_pct", 0.96f) * 100).toInt().coerceIn(0, 100)
         val orbXLabel = makeSectionLabel("Posizione orizzontale tasto ✦: $orbXPct%")
         container.addView(orbXLabel)
 
@@ -214,7 +238,7 @@ class MainActivity : Activity() {
         }
         container.addView(orbXSeek)
 
-        val orbBottomDp = (prefs.getInt("orb_bottom_offset", (36 * density).toInt()) / density).toInt().coerceIn(0, 750)
+        val orbBottomDp = (safeInt("orb_bottom_offset", (36 * density).toInt()) / density).toInt().coerceIn(0, 750)
         val orbYLabel = makeSectionLabel("Altezza dal basso tasto ✦: ${orbBottomDp}dp")
         container.addView(orbYLabel)
 
@@ -234,7 +258,7 @@ class MainActivity : Activity() {
 
         container.addView(makeGroupTitle("POSIZIONE TASTIERA (ANCHE TRASCINABILE OVUNQUE)"))
 
-        val kbXPct = (prefs.getFloat("kb_x_pct", 1.0f) * 100).toInt().coerceIn(0, 100)
+        val kbXPct = (safeFloat("kb_x_pct", 1.0f) * 100).toInt().coerceIn(0, 100)
         val kbXLabel = makeSectionLabel("Posizione orizzontale tastiera: $kbXPct%")
         container.addView(kbXLabel)
 
@@ -252,7 +276,7 @@ class MainActivity : Activity() {
         }
         container.addView(kbXSeek)
 
-        val kbBottomDp = (prefs.getInt("kb_bottom_offset", (36 * density).toInt()) / density).toInt().coerceIn(0, 750)
+        val kbBottomDp = (safeInt("kb_bottom_offset", (36 * density).toInt()) / density).toInt().coerceIn(0, 750)
         val kbYLabel = makeSectionLabel("Altezza dal basso tastiera: ${kbBottomDp}dp")
         container.addView(kbYLabel)
 
@@ -275,7 +299,7 @@ class MainActivity : Activity() {
         // =========================================================================
         container.addView(makeGroupTitle("DIMENSIONI, INCLINAZIONE E SFONDO"))
 
-        val savedTilt = prefs.getFloat("kb_tilt", 0f).toInt().coerceIn(-90, 90)
+        val savedTilt = safeFloat("kb_tilt", 0f).toInt().coerceIn(-90, 90)
         val tiltLabel = makeSectionLabel("Inclinazione / apertura: ${savedTilt}°")
         container.addView(tiltLabel)
 
@@ -294,7 +318,7 @@ class MainActivity : Activity() {
         }
         container.addView(tiltSeekBar)
 
-        val savedLetterSize = prefs.getFloat("kb_letter_size", 1.0f)
+        val savedLetterSize = safeFloat("kb_letter_size", 1.0f)
         val initialLetterPct = (savedLetterSize * 100).toInt().coerceIn(60, 150)
         val letterLabel = makeSectionLabel("Grandezza delle lettere: $initialLetterPct%")
         container.addView(letterLabel)
@@ -314,7 +338,7 @@ class MainActivity : Activity() {
         }
         container.addView(letterSeekBar)
 
-        val savedSpacing = prefs.getFloat("kb_key_spacing", 0.25f)
+        val savedSpacing = safeFloat("kb_key_spacing", 0.25f)
         val initialSpacingPct = (savedSpacing * 100).toInt().coerceIn(0, 100)
         val spacingLabel = makeSectionLabel("Spazio tra lettere ed elementi: $initialSpacingPct%")
         container.addView(spacingLabel)
@@ -333,7 +357,7 @@ class MainActivity : Activity() {
         }
         container.addView(spacingSeekBar)
 
-        val savedScale = prefs.getFloat("kb_scale", 0.84f)
+        val savedScale = safeFloat("kb_scale", 0.84f)
         val initialSizePct = (savedScale * 100).toInt().coerceIn(50, 98)
         val sizeLabel = makeSectionLabel("Dimensione generale tastiera: $initialSizePct%")
         container.addView(sizeLabel)
@@ -353,7 +377,7 @@ class MainActivity : Activity() {
         }
         container.addView(sizeSeekBar)
 
-        val savedOpacity = prefs.getFloat("kb_alpha", 0.12f)
+        val savedOpacity = safeFloat("kb_alpha", 0.12f)
         val initialOpacityPct = (savedOpacity * 100).toInt().coerceIn(0, 100)
         val alphaLabel = makeSectionLabel("Opacità sfondo: $initialOpacityPct% (0%=Senza sfondo)")
         container.addView(alphaLabel)
@@ -391,7 +415,7 @@ class MainActivity : Activity() {
                 val chooser = Intent.createChooser(pickIntent, "Scegli scorciatoia (es. Shortcut Maker)")
                 @Suppress("DEPRECATION")
                 startActivityForResult(chooser, REQ_PICK_SHORTCUT)
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 Toast.makeText(this, "Nessuna app di scorciatoie trovata", Toast.LENGTH_SHORT).show()
             }
         })
@@ -482,13 +506,13 @@ class MainActivity : Activity() {
         }
         spinner.adapter = adapter
 
-        val savedComp = prefs.getString("voice_service_component", null)
+        val savedComp = safeString("voice_service_component", null)
         val initialIdx = voiceComponents.indexOfFirst { it?.flattenToString() == savedComp }.coerceAtLeast(0)
         spinner.setSelection(initialIdx)
 
         spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val comp = voiceComponents[position]
+                val comp = voiceComponents.getOrNull(position)
                 prefs.edit().putString("voice_service_component", comp?.flattenToString()).apply()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
@@ -519,56 +543,63 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_PICK_SHORTCUT && resultCode == RESULT_OK && data != null) {
-            @Suppress("DEPRECATION")
-            val shortcutIntent = data.getParcelableExtra<Intent>(Intent.EXTRA_SHORTCUT_INTENT)
-            @Suppress("DEPRECATION")
-            val shortcutName = data.getStringExtra(Intent.EXTRA_SHORTCUT_NAME)?.trim().orEmpty()
-            if (shortcutIntent != null) {
-                val label = if (shortcutName.isNotEmpty()) shortcutName else "Scorciatoia App"
-                val uriString = shortcutIntent.toUri(Intent.URI_INTENT_SCHEME)
-                val current = loadShortcuts().toMutableList()
-                current.add(StoredShortcut("INTENT_URI", label, uriString))
-                saveShortcuts(current)
-                refreshShortcutsList()
-                Toast.makeText(this, "Scorciatoia '$label' aggiunta", Toast.LENGTH_SHORT).show()
+            try {
+                @Suppress("DEPRECATION")
+                val shortcutIntent = data.getParcelableExtra<Intent>(Intent.EXTRA_SHORTCUT_INTENT)
+                @Suppress("DEPRECATION")
+                val shortcutName = data.getStringExtra(Intent.EXTRA_SHORTCUT_NAME)?.trim().orEmpty()
+                if (shortcutIntent != null) {
+                    val label = if (shortcutName.isNotEmpty()) shortcutName else "Scorciatoia App"
+                    val uriString = shortcutIntent.toUri(Intent.URI_INTENT_SCHEME)
+                    val current = loadShortcuts().toMutableList()
+                    current.add(StoredShortcut("INTENT_URI", label, uriString))
+                    saveShortcuts(current)
+                    refreshShortcutsList()
+                    Toast.makeText(this, "Scorciatoia '$label' aggiunta", Toast.LENGTH_SHORT).show()
+                }
+            } catch (_: Throwable) {
+                Toast.makeText(this, "Errore durante l'importazione della scorciatoia", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
     private fun showInstalledAppsDialog() {
-        val mainIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
-        }
-        val resolved = packageManager.queryIntentActivities(mainIntent, 0)
-            .mapNotNull { ri ->
-                val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
-                val label = ri.loadLabel(packageManager).toString()
-                label to pkg
+        try {
+            val mainIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
             }
-            .distinctBy { it.second }
-            .sortedBy { it.first.lowercase() }
+            val resolved = packageManager.queryIntentActivities(mainIntent, 0)
+                .mapNotNull { ri ->
+                    val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+                    val label = ri.loadLabel(packageManager).toString()
+                    label to pkg
+                }
+                .distinctBy { it.second }
+                .sortedBy { it.first.lowercase() }
 
-        if (resolved.isEmpty()) {
-            Toast.makeText(this, "Nessuna app trovata", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val names = resolved.map { it.first }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Scegli un'App per il menu ✦")
-            .setItems(names) { _, which ->
-                val (appName, pkgName) = resolved[which]
-                val current = loadShortcuts().toMutableList()
-                current.add(StoredShortcut("APP", appName, pkgName))
-                saveShortcuts(current)
-                refreshShortcutsList()
-                Toast.makeText(this, "App '$appName' aggiunta", Toast.LENGTH_SHORT).show()
+            if (resolved.isEmpty()) {
+                Toast.makeText(this, "Nessuna app trovata", Toast.LENGTH_SHORT).show()
+                return
             }
-            .show()
+
+            val names = resolved.map { it.first }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("Scegli un'App per il menu ✦")
+                .setItems(names) { _, which ->
+                    val (appName, pkgName) = resolved[which]
+                    val current = loadShortcuts().toMutableList()
+                    current.add(StoredShortcut("APP", appName, pkgName))
+                    saveShortcuts(current)
+                    refreshShortcutsList()
+                    Toast.makeText(this, "App '$appName' aggiunta", Toast.LENGTH_SHORT).show()
+                }
+                .show()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun loadShortcuts(): List<StoredShortcut> {
-        val raw = prefs.getString("custom_shortcuts", "") ?: ""
+        val raw = safeString("custom_shortcuts", "") ?: ""
         if (raw.isBlank()) return emptyList()
         return raw.split("\u001E").mapNotNull { entry ->
             val parts = entry.split("\u001F")
@@ -670,16 +701,19 @@ class MainActivity : Activity() {
         voiceComponents.add(null)
         voiceLabels.add("Predefinito di sistema (Automatico)")
 
-        val services = packageManager.queryIntentServices(
-            Intent(RecognitionService.SERVICE_INTERFACE),
-            0
-        )
-        for (ri in services) {
-            val si = ri.serviceInfo ?: continue
-            val cn = ComponentName(si.packageName, si.name)
-            val appLabel = ri.loadLabel(packageManager).toString()
-            voiceComponents.add(cn)
-            voiceLabels.add("$appLabel (${si.packageName})")
+        try {
+            val services = packageManager.queryIntentServices(
+                Intent(RecognitionService.SERVICE_INTERFACE),
+                0
+            )
+            for (ri in services) {
+                val si = ri.serviceInfo ?: continue
+                val cn = ComponentName(si.packageName, si.name)
+                val appLabel = ri.loadLabel(packageManager).toString()
+                voiceComponents.add(cn)
+                voiceLabels.add("$appLabel (${si.packageName})")
+            }
+        } catch (_: Throwable) {
         }
     }
 
