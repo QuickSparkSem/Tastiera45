@@ -15,9 +15,13 @@ import android.os.Looper
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 class AngledKeyboardView(
     context: Context,
@@ -43,27 +47,55 @@ class AngledKeyboardView(
         val isSpecial: Boolean = false
     )
 
-    private var scaleFactor = 0.82f
-    private var bgOpacity = 0.94f
-    private var tiltAngleDeg = -22f
+    private data class ArcKeySector(
+        val key: KeyDef,
+        val innerR: Float,
+        val outerR: Float,
+        val startDeg: Float,
+        val sweepDeg: Float,
+        val path: Path,
+        val centerX: Float,
+        val centerY: Float,
+        val textAngleDeg: Float
+    )
+
+    private var isArcLayout = true
+    private var isArcLeftSide = false
+    private var scaleFactor = 0.84f
+    private var bgOpacity = 0.12f
+    private var tiltAngleDeg = 0f
     private var letterSizeScale = 1.0f
     private var keySpacingScale = 0.25f
+
+    // Parametri ombra marcata sotto lettere e linee
+    private var shadowStrength = 0.90f
+    private var shadowBlurDp = 6.5f
 
     private var isShifted = false
     private var isCapsLock = false
     private var isSymbolsMode = false
     private var actionType = "SEARCH"
 
-    // Geometria scolpita aderente ai tasti (nessuno spazio nero sprecato)
+    // Geometria Pop-up Scolpito
     private val localContourPath = Path()
     private val screenContourPath = Path()
     private val dragHandleLocalRect = RectF()
     private val forwardMatrix = Matrix()
     private val inverseMatrix = Matrix()
-
     private val computedKeys = mutableListOf<Pair<KeyDef, RectF>>()
-    private val letterCenters = mutableMapOf<Char, PointF>()
     private var localClusterWidth = 600f
+
+    // Geometria Ad Arco Concentrico (stile foto)
+    private var arcCenterX = 0f
+    private var arcCenterY = 0f
+    private var arcOuterR = 0f
+    private var arcHubR = 0f
+    private var arcFanStartDeg = 180f
+    private var arcFanSweepDeg = 90f
+    private val arcSectors = mutableListOf<ArcKeySector>()
+    private val arcOuterContourPath = Path()
+
+    private val letterCenters = mutableMapOf<Char, PointF>()
 
     private enum class GestureMode {
         NONE, KEY_TAP, SWIPE_TYPING, SPACE_CURSOR, DRAG_POPUP
@@ -120,30 +152,42 @@ class AngledKeyboardView(
         }
     }
 
-    // Tema 100% Bianco e Nero Minimal
+    // Paint minimal Bianco e Nero + Ombra marcata regolabile
     private val sculptedBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         style = Paint.Style.FILL
     }
     private val sculptedBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#323236")
+        color = Color.parseColor("#55FFFFFF")
         style = Paint.Style.STROKE
-        strokeWidth = 2.2f
+        strokeWidth = 2.0f
+    }
+    private val arcLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(215, 255, 255, 255)
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
     }
     private val dragPillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#8E8E93")
+        color = Color.WHITE
         style = Paint.Style.FILL
     }
     private val mainTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
     }
+    private val textShadowOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.STROKE
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        textAlign = Paint.Align.CENTER
+    }
     private val subTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#8E8E93")
+        color = Color.parseColor("#E5E5EA")
         textAlign = Paint.Align.CENTER
     }
     private val keyHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(55, 255, 255, 255)
+        color = Color.argb(65, 255, 255, 255)
         style = Paint.Style.FILL
     }
     private val actionCircleFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -163,12 +207,35 @@ class AngledKeyboardView(
         strokeJoin = Paint.Join.ROUND
     }
     private val swipeTrailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(180, 255, 255, 255)
+        color = Color.argb(190, 255, 255, 255)
         style = Paint.Style.STROKE
         strokeWidth = 7f
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         pathEffect = CornerPathEffect(18f)
+    }
+
+    init {
+        // Necessario affinché setShadowLayer renda al massimo su tutte le versioni Android
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
+    }
+
+    fun setArcLayoutMode(arcMode: Boolean) {
+        if (isArcLayout != arcMode) {
+            isArcLayout = arcMode
+            requestLayout()
+            invalidate()
+        }
+    }
+
+    fun isArcLayoutMode(): Boolean = isArcLayout
+
+    fun setArcLeftSide(left: Boolean) {
+        if (isArcLeftSide != left) {
+            isArcLeftSide = left
+            requestLayout()
+            invalidate()
+        }
     }
 
     fun setScaleFactor(scale: Float) {
@@ -181,7 +248,7 @@ class AngledKeyboardView(
     }
 
     fun setOpacity(opacity: Float) {
-        bgOpacity = opacity.coerceIn(0.15f, 1.0f)
+        bgOpacity = opacity.coerceIn(0.0f, 1.0f)
         invalidate()
     }
 
@@ -211,19 +278,52 @@ class AngledKeyboardView(
         }
     }
 
+    fun setShadowConfig(strength: Float, blurDp: Float) {
+        shadowStrength = strength.coerceIn(0.0f, 1.0f)
+        shadowBlurDp = blurDp.coerceIn(0.0f, 16.0f)
+        invalidate()
+    }
+
     fun setActionType(type: String) {
         actionType = type
         invalidate()
     }
 
     fun appendContourToRegion(targetRegion: Region, offsetX: Int, offsetY: Int) {
-        if (width <= 0 || height <= 0 || screenContourPath.isEmpty) return
-        val shifted = Path(screenContourPath)
+        if (width <= 0 || height <= 0) return
+        val sourcePath = if (isArcLayout) arcOuterContourPath else screenContourPath
+        if (sourcePath.isEmpty) return
+
+        val shifted = Path(sourcePath)
         shifted.offset(offsetX.toFloat(), offsetY.toFloat())
         val pathRegion = Region()
         val clip = Region(offsetX, offsetY, offsetX + width, offsetY + height)
         pathRegion.setPath(shifted, clip)
         targetRegion.op(pathRegion, Region.Op.UNION)
+    }
+
+    private fun configureShadowPaints(density: Float) {
+        val shadowAlpha = (shadowStrength * 255).toInt().coerceIn(0, 255)
+        val radiusPx = (shadowBlurDp * density).coerceAtLeast(0.1f)
+        val offsetYPx = (2.2f * density * shadowStrength)
+        val shadowColor = Color.argb(shadowAlpha, 0, 0, 0)
+
+        if (shadowStrength > 0.02f) {
+            mainTextPaint.setShadowLayer(radiusPx, 0f, offsetYPx, shadowColor)
+            subTextPaint.setShadowLayer(radiusPx * 0.8f, 0f, offsetYPx * 0.8f, shadowColor)
+            arcLinePaint.setShadowLayer(radiusPx * 0.9f, 0f, offsetYPx * 0.7f, shadowColor)
+            vectorIconWhitePaint.setShadowLayer(radiusPx, 0f, offsetYPx, shadowColor)
+            dragPillPaint.setShadowLayer(radiusPx, 0f, offsetYPx, shadowColor)
+        } else {
+            mainTextPaint.clearShadowLayer()
+            subTextPaint.clearShadowLayer()
+            arcLinePaint.clearShadowLayer()
+            vectorIconWhitePaint.clearShadowLayer()
+            dragPillPaint.clearShadowLayer()
+        }
+
+        textShadowOutlinePaint.color = Color.argb((shadowStrength * 235).toInt().coerceIn(0, 255), 0, 0, 0)
+        textShadowOutlinePaint.strokeWidth = (2.8f * density * shadowStrength).coerceAtLeast(0.5f)
     }
 
     private fun getRowDefinitions(): List<List<KeyDef>> {
@@ -246,7 +346,7 @@ class AngledKeyboardView(
                 listOf(
                     KeyDef("ABC", "ABC", isSpecial = true, weight = 1.35f),
                     KeyDef("GLOBE", "", isSpecial = true, weight = 1.15f),
-                    KeyDef("SPACE", "Italiano", weight = 4.4f),
+                    KeyDef("SPACE", "Spazio", weight = 4.2f),
                     KeyDef(",", ","),
                     KeyDef("ENTER", "", isActionKey = true, weight = 1.35f)
                 )
@@ -276,7 +376,7 @@ class AngledKeyboardView(
                 listOf(
                     KeyDef("SYM", "!#1", isSpecial = true, weight = 1.35f),
                     KeyDef("GLOBE", "", isSpecial = true, weight = 1.15f),
-                    KeyDef("SPACE", "Italiano", weight = 4.4f),
+                    KeyDef("SPACE", "Spazio", weight = 4.2f),
                     KeyDef(".", ".", ""),
                     KeyDef("ENTER", "", isActionKey = true, weight = 1.35f)
                 )
@@ -288,30 +388,166 @@ class AngledKeyboardView(
         val density = resources.displayMetrics.density
         val screenW = resources.displayMetrics.widthPixels
 
-        localClusterWidth = (screenW * scaleFactor).coerceAtLeast(210f * density)
-        val verticalGap = (10f * density) * keySpacingScale
-        val baseRowH = localClusterWidth * 0.128f
-        val dragTabH = 22f * density
-        val pad = 5f * density
+        if (isArcLayout) {
+            val radius = (screenW * scaleFactor * 0.96f).coerceAtLeast(220f * density)
+            val pad = 8f * density
+            val measW = ceil(radius + pad * 2f).toInt()
+            val measH = ceil(radius + pad * 2f).toInt()
+            setMeasuredDimension(measW, measH)
+        } else {
+            localClusterWidth = (screenW * scaleFactor).coerceAtLeast(210f * density)
+            val verticalGap = (10f * density) * keySpacingScale
+            val baseRowH = localClusterWidth * 0.128f
+            val dragTabH = 22f * density
+            val pad = 5f * density
 
-        val localTotalW = localClusterWidth + pad * 2f
-        val localTotalH = dragTabH + (baseRowH * 4f) + (verticalGap * 3f) + pad * 2f
+            val localTotalW = localClusterWidth + pad * 2f
+            val localTotalH = dragTabH + (baseRowH * 4f) + (verticalGap * 3f) + pad * 2f
 
-        // Calcola l'ingombro esatto dopo la rotazione per evitare tagli o spazi vuoti
-        val m = Matrix()
-        m.setRotate(tiltAngleDeg, localTotalW / 2f, localTotalH / 2f)
-        val bounds = RectF(0f, 0f, localTotalW, localTotalH)
-        m.mapRect(bounds)
+            val m = Matrix()
+            m.setRotate(tiltAngleDeg, localTotalW / 2f, localTotalH / 2f)
+            val bounds = RectF(0f, 0f, localTotalW, localTotalH)
+            m.mapRect(bounds)
 
-        val measW = ceil(bounds.width() + 8f * density).toInt()
-        val measH = ceil(bounds.height() + 8f * density).toInt()
-        setMeasuredDimension(measW, measH)
+            val measW = ceil(bounds.width() + 8f * density).toInt()
+            val measH = ceil(bounds.height() + 8f * density).toInt()
+            setMeasuredDimension(measW, measH)
+        }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        rebuildSculptedLayout()
+        if (isArcLayout) {
+            rebuildArcLayout()
+        } else {
+            rebuildSculptedLayout()
+        }
     }
+
+    // =========================================================================
+    // COSTRUZIONE LAYOUT 1: AD ARCO CONCENTRICO DALL'ANGOLO (STILE FOTO)
+    // =========================================================================
+
+    private fun rebuildArcLayout() {
+        arcSectors.clear()
+        letterCenters.clear()
+        arcOuterContourPath.reset()
+        if (width <= 0 || height <= 0) return
+
+        val density = resources.displayMetrics.density
+        val pad = 8f * density
+        arcOuterR = (minOf(width, height) - pad * 2f).coerceAtLeast(120f * density)
+        arcHubR = arcOuterR * 0.24f
+
+        if (isArcLeftSide) {
+            arcCenterX = pad
+            arcCenterY = height - pad
+            // Angolo da 270° (alto) a 360° (destra)
+            val baseCenter = 315f
+            arcFanSweepDeg = (90f + tiltAngleDeg * 0.22f).coerceIn(72f, 92f)
+            arcFanStartDeg = (baseCenter - arcFanSweepDeg / 2f).coerceIn(270f, 360f - arcFanSweepDeg)
+        } else {
+            arcCenterX = width - pad
+            arcCenterY = height - pad
+            // Angolo da 180° (sinistra) a 270° (alto)
+            val baseCenter = 225f
+            arcFanSweepDeg = (90f + tiltAngleDeg * 0.22f).coerceIn(72f, 92f)
+            arcFanStartDeg = (baseCenter - arcFanSweepDeg / 2f).coerceIn(180f, 270f - arcFanSweepDeg)
+        }
+
+        // Contorno esterno del settore ad arco per tocchi passanti e sfondo leggero
+        val fullOuterOval = RectF(
+            arcCenterX - arcOuterR,
+            arcCenterY - arcOuterR,
+            arcCenterX + arcOuterR,
+            arcCenterY + arcOuterR
+        )
+        val hubInnerR = arcHubR * 0.35f
+        val fullInnerOval = RectF(
+            arcCenterX - hubInnerR,
+            arcCenterY - hubInnerR,
+            arcCenterX + hubInnerR,
+            arcCenterY + hubInnerR
+        )
+        arcOuterContourPath.arcTo(fullOuterOval, arcFanStartDeg, arcFanSweepDeg, true)
+        arcOuterContourPath.arcTo(fullInnerOval, arcFanStartDeg + arcFanSweepDeg, -arcFanSweepDeg, false)
+        arcOuterContourPath.close()
+
+        val rows = getRowDefinitions()
+        val ringGap = (7f * density) * keySpacingScale
+        val angularGapDeg = 2.4f * keySpacingScale
+        val usableRadialSpan = (arcOuterR - arcHubR - ringGap * 3f).coerceAtLeast(60f)
+        val bandThickness = usableRadialSpan / 4f
+
+        // Riga 0 (QWERTY) sull'anello esterno, Riga 3 (Spazio/Invio) sull'anello interno
+        rows.forEachIndexed { rowIndex, rowKeys ->
+            val outerR = arcOuterR - rowIndex * (bandThickness + ringGap)
+            val innerR = (outerR - bandThickness).coerceAtLeast(arcHubR * 0.5f)
+            val midR = (outerR + innerR) / 2f
+
+            // Leggera rastremazione degli archi interni
+            val rowAngleInset = when (rowIndex) {
+                0 -> 0f
+                1 -> 1.5f
+                2 -> 1.0f
+                else -> 2.5f
+            }
+            val rowStartDeg = arcFanStartDeg + rowAngleInset
+            val rowSweepDeg = (arcFanSweepDeg - rowAngleInset * 2f).coerceAtLeast(30f)
+            val totalGapDeg = angularGapDeg * (rowKeys.size - 1).coerceAtLeast(0)
+            val usableSweepDeg = (rowSweepDeg - totalGapDeg).coerceAtLeast(20f)
+            val totalWeight = rowKeys.sumOf { it.weight.toDouble() }.toFloat()
+
+            val outerOval = RectF(arcCenterX - outerR, arcCenterY - outerR, arcCenterX + outerR, arcCenterY + outerR)
+            val innerOval = RectF(arcCenterX - innerR, arcCenterY - innerR, arcCenterX + innerR, arcCenterY + innerR)
+
+            var curDeg = rowStartDeg
+            for (k in rowKeys) {
+                val keySweep = (k.weight / totalWeight) * usableSweepDeg
+                val midDeg = curDeg + keySweep / 2f
+                val rad = Math.toRadians(midDeg.toDouble())
+                val cx = arcCenterX + (midR * cos(rad)).toFloat()
+                val cy = arcCenterY + (midR * sin(rad)).toFloat()
+
+                val sectorPath = Path().apply {
+                    arcTo(outerOval, curDeg, keySweep, true)
+                    arcTo(innerOval, curDeg + keySweep, -keySweep, false)
+                    close()
+                }
+
+                // Orientamento lettera tangenziale sempre dritto e leggibile
+                var textRot = (midDeg + 90f) % 360f
+                if (textRot < 0f) textRot += 360f
+                if (textRot in 90.01f..269.99f) {
+                    textRot = (textRot + 180f) % 360f
+                }
+
+                arcSectors.add(
+                    ArcKeySector(
+                        key = k,
+                        innerR = innerR,
+                        outerR = outerR,
+                        startDeg = curDeg,
+                        sweepDeg = keySweep,
+                        path = sectorPath,
+                        centerX = cx,
+                        centerY = cy,
+                        textAngleDeg = textRot
+                    )
+                )
+
+                if (k.code.length == 1 && k.code[0] in 'a'..'z') {
+                    letterCenters[k.code[0]] = PointF(cx, cy)
+                }
+
+                curDeg += keySweep + angularGapDeg
+            }
+        }
+    }
+
+    // =========================================================================
+    // COSTRUZIONE LAYOUT 2: POP-UP SCOLPITO FLUTTUANTE
+    // =========================================================================
 
     private fun rebuildSculptedLayout() {
         computedKeys.clear()
@@ -331,19 +567,16 @@ class AngledKeyboardView(
         val localTotalW = localClusterWidth + pad * 2f
         val localTotalH = dragTabH + (baseRowH * 4f) + (verticalGap * 3f) + pad * 2f
 
-        // Matrice che ruota la tastiera scolpita e la centra nella View
         forwardMatrix.reset()
         forwardMatrix.postRotate(tiltAngleDeg, localTotalW / 2f, localTotalH / 2f)
         forwardMatrix.postTranslate((width - localTotalW) / 2f, (height - localTotalH) / 2f)
         forwardMatrix.invert(inverseMatrix)
 
-        // Linguetta superiore per trascinare il pop-up sullo schermo
         val tabW = (localClusterWidth * 0.34f).coerceAtLeast(74f * density)
         val tabLeft = (localTotalW - tabW) / 2f
         val tabRight = tabLeft + tabW
         dragHandleLocalRect.set(tabLeft, 0f, tabRight, dragTabH + pad)
 
-        // Righe scolpite che seguono la sagoma reale dei tasti senza eccessi di nero
         val rows = getRowDefinitions()
         val rowBoundsList = mutableListOf<RectF>()
 
@@ -351,7 +584,6 @@ class AngledKeyboardView(
             val top = dragTabH + pad + rowIndex * (baseRowH + verticalGap)
             val bottom = top + baseRowH
 
-            // Leggera rastremazione ergonomica delle righe per seguire esattamente le lettere
             val sideInset = when (rowIndex) {
                 0 -> 0f
                 1 -> localClusterWidth * 0.032f
@@ -381,7 +613,6 @@ class AngledKeyboardView(
             }
         }
 
-        // Costruisce il contorno poligonale aderente alla linguetta e alle 4 righe
         localContourPath.reset()
         if (rowBoundsList.size == 4) {
             val r0 = rowBoundsList[0]
@@ -393,7 +624,6 @@ class AngledKeyboardView(
             localContourPath.lineTo(dragHandleLocalRect.right, dragHandleLocalRect.top)
             localContourPath.lineTo(dragHandleLocalRect.right, r0.top)
 
-            // Lato destro aderente alle 4 righe
             localContourPath.lineTo(r0.right, r0.top)
             localContourPath.lineTo(r0.right, r0.bottom)
             localContourPath.lineTo(r1.right, r1.top)
@@ -403,7 +633,6 @@ class AngledKeyboardView(
             localContourPath.lineTo(r3.right, r3.top)
             localContourPath.lineTo(r3.right, r3.bottom)
 
-            // Base e lato sinistro aderente alle 4 righe
             localContourPath.lineTo(r3.left, r3.bottom)
             localContourPath.lineTo(r3.left, r3.top)
             localContourPath.lineTo(r2.left, r2.bottom)
@@ -421,26 +650,114 @@ class AngledKeyboardView(
         localContourPath.transform(forwardMatrix, screenContourPath)
     }
 
+    // =========================================================================
+    // DISEGNO SU CANVAS
+    // =========================================================================
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val density = resources.displayMetrics.density
-        val alphaInt = (bgOpacity * 255).toInt().coerceIn(30, 255)
-        val cornerFx = CornerPathEffect(12f * density)
+        configureShadowPaints(density)
 
-        sculptedBgPaint.color = Color.argb(alphaInt, 0, 0, 0)
-        sculptedBgPaint.pathEffect = cornerFx
-        sculptedBorderPaint.color = Color.argb((alphaInt * 0.85f).toInt().coerceAtLeast(60), 54, 54, 60)
-        sculptedBorderPaint.pathEffect = cornerFx
+        if (isArcLayout) {
+            drawArcKeyboard(canvas, density)
+        } else {
+            drawSculptedKeyboard(canvas, density)
+        }
+    }
+
+    private fun drawArcKeyboard(canvas: Canvas, density: Float) {
+        val alphaInt = (bgOpacity * 255).toInt().coerceIn(0, 255)
+        if (alphaInt > 0) {
+            sculptedBgPaint.pathEffect = null
+            sculptedBgPaint.color = Color.argb(alphaInt, 0, 0, 0)
+            canvas.drawPath(arcOuterContourPath, sculptedBgPaint)
+        }
+
+        arcLinePaint.strokeWidth = 1.15f * density
+        arcLinePaint.color = Color.argb(210, 255, 255, 255)
+
+        val unitSize = ((arcOuterR - arcHubR) / 4f) * letterSizeScale
+        subTextPaint.textSize = (unitSize * 0.24f).coerceAtLeast(7f * density)
+
+        for (sector in arcSectors) {
+            val key = sector.key
+            if (activeKey == key) {
+                canvas.drawPath(sector.path, keyHighlightPaint)
+            }
+
+            // Disegna i segmenti concentrici minimali attorno al tasto (stile foto)
+            canvas.drawPath(sector.path, arcLinePaint)
+
+            canvas.save()
+            canvas.translate(sector.centerX, sector.centerY)
+            canvas.rotate(sector.textAngleDeg)
+
+            val iconBox = RectF(-unitSize * 0.45f, -unitSize * 0.45f, unitSize * 0.45f, unitSize * 0.45f)
+            when {
+                key.isActionKey -> drawMonochromeActionKey(canvas, iconBox, density)
+                key.code == "SHIFT" -> drawMonochromeShiftKey(canvas, iconBox, density)
+                key.code == "DEL" -> drawMonochromeBackspaceKey(canvas, iconBox, density)
+                key.code == "GLOBE" -> drawMonochromeGlobeKey(canvas, iconBox, density)
+                else -> {
+                    mainTextPaint.textSize = when {
+                        key.code == "SPACE" -> (unitSize * 0.34f).coerceAtLeast(10f * density)
+                        key.label.length >= 3 -> (unitSize * 0.32f).coerceAtLeast(9.5f * density)
+                        else -> (unitSize * 0.48f).coerceAtLeast(13f * density)
+                    }
+                    mainTextPaint.color = Color.WHITE
+                    val textY = -(mainTextPaint.descent() + mainTextPaint.ascent()) / 2f
+
+                    // Doppio passaggio per ombra molto marcata sotto le lettere
+                    if (shadowStrength > 0.05f) {
+                        textShadowOutlinePaint.textSize = mainTextPaint.textSize
+                        canvas.drawText(key.label, 0f, textY, textShadowOutlinePaint)
+                    }
+                    canvas.drawText(key.label, 0f, textY, mainTextPaint)
+
+                    if (key.subLabel.isNotEmpty()) {
+                        val subX = unitSize * 0.28f
+                        val subY = -unitSize * 0.16f
+                        if (shadowStrength > 0.05f) {
+                            textShadowOutlinePaint.textSize = subTextPaint.textSize
+                            canvas.drawText(key.subLabel, subX, subY, textShadowOutlinePaint)
+                        }
+                        canvas.drawText(key.subLabel, subX, subY, subTextPaint)
+                    }
+                }
+            }
+            canvas.restore()
+        }
+
+        // Nucleo interno nell'angolo per trascinare l'arco ovunque sullo schermo
+        val gripR = arcHubR * 0.72f
+        val gripOval = RectF(arcCenterX - gripR, arcCenterY - gripR, arcCenterX + gripR, arcCenterY + gripR)
+        canvas.drawArc(gripOval, arcFanStartDeg, arcFanSweepDeg, false, arcLinePaint)
+
+        if (gestureMode == GestureMode.SWIPE_TYPING && swipePathPoints.size > 1) {
+            canvas.drawPath(swipeDrawPath, swipeTrailPaint)
+        }
+    }
+
+    private fun drawSculptedKeyboard(canvas: Canvas, density: Float) {
+        val alphaInt = (bgOpacity * 255).toInt().coerceIn(0, 255)
+        val cornerFx = CornerPathEffect(12f * density)
 
         canvas.save()
         canvas.concat(forwardMatrix)
 
-        // 1. Disegna lo sfondo scolpito aderente ai tasti (zero nero in eccesso)
-        canvas.drawPath(localContourPath, sculptedBgPaint)
+        if (alphaInt > 0) {
+            sculptedBgPaint.color = Color.argb(alphaInt, 0, 0, 0)
+            sculptedBgPaint.pathEffect = cornerFx
+            canvas.drawPath(localContourPath, sculptedBgPaint)
+        }
+
+        sculptedBorderPaint.color = Color.argb(130, 255, 255, 255)
+        sculptedBorderPaint.pathEffect = cornerFx
         canvas.drawPath(localContourPath, sculptedBorderPaint)
 
-        // 2. Disegna la barra minimal per trascinare il pop-up sullo schermo
-        val pillW = dragHandleLocalRect.width() * 0.46f
+        // Barra minimal per trascinare il pop-up ovunque sullo schermo
+        val pillW = dragHandleLocalRect.width() * 0.48f
         val pillH = 3.5f * density
         val pillLeft = dragHandleLocalRect.centerX() - pillW / 2f
         val pillTop = (dragHandleLocalRect.top + 8f * density)
@@ -449,7 +766,6 @@ class AngledKeyboardView(
             pillH, pillH, dragPillPaint
         )
 
-        // 3. Disegna tutti i tasti in tema Bianco e Nero minimal
         val keyUnitW = (localClusterWidth / 10f) * letterSizeScale
         subTextPaint.textSize = (keyUnitW * 0.23f).coerceAtLeast(7f * density)
 
@@ -474,13 +790,22 @@ class AngledKeyboardView(
                         key.label.length >= 3 -> (keyUnitW * 0.32f).coerceAtLeast(9f * density)
                         else -> (keyUnitW * 0.49f).coerceAtLeast(12f * density)
                     }
-                    mainTextPaint.color = if (key.code == "SPACE") Color.parseColor("#E5E5EA") else Color.WHITE
+                    mainTextPaint.color = Color.WHITE
                     val textY = rect.centerY() - (mainTextPaint.descent() + mainTextPaint.ascent()) / 2f
+
+                    if (shadowStrength > 0.05f) {
+                        textShadowOutlinePaint.textSize = mainTextPaint.textSize
+                        canvas.drawText(key.label, rect.centerX(), textY, textShadowOutlinePaint)
+                    }
                     canvas.drawText(key.label, rect.centerX(), textY, mainTextPaint)
 
                     if (key.subLabel.isNotEmpty()) {
                         val subX = rect.right - rect.width() * 0.16f
                         val subY = rect.top + rect.height() * 0.30f
+                        if (shadowStrength > 0.05f) {
+                            textShadowOutlinePaint.textSize = subTextPaint.textSize
+                            canvas.drawText(key.subLabel, subX, subY, textShadowOutlinePaint)
+                        }
                         canvas.drawText(key.subLabel, subX, subY, subTextPaint)
                     }
                 }
@@ -499,7 +824,6 @@ class AngledKeyboardView(
         val cy = rect.centerY()
         val r = minOf(rect.width(), rect.height()) * 0.35f
 
-        // Cerchio bianco puro minimal con icona nera ad alto contrasto (zero blu)
         canvas.drawCircle(cx, cy, r, actionCircleFillPaint)
         vectorIconBlackPaint.strokeWidth = 2.0f * density
         vectorIconBlackPaint.style = Paint.Style.STROKE
@@ -544,7 +868,6 @@ class AngledKeyboardView(
                 canvas.drawLine(cx + s * 0.70f, cy - s * 0.45f, cx + s * 0.70f, cy + s * 0.45f, vectorIconBlackPaint)
             }
             else -> {
-                // Invio classico minimal (↵)
                 val p = Path().apply {
                     moveTo(cx + s * 0.55f, cy - s * 0.45f)
                     lineTo(cx + s * 0.55f, cy + s * 0.20f)
@@ -617,18 +940,64 @@ class AngledKeyboardView(
         canvas.drawOval(cx - r * 0.46f, cy - r, cx + r * 0.46f, cy + r, vectorIconWhitePaint)
     }
 
+    // =========================================================================
+    // GESTIONE TOUCH E TRASCINAMENTO OVUNQUE SULLO SCHERMO
+    // =========================================================================
+
+    private fun isAngleInArc(angleDeg: Float, startDeg: Float, sweepDeg: Float): Boolean {
+        val diff = ((angleDeg - startDeg) % 360f + 360f) % 360f
+        return diff <= sweepDeg
+    }
+
+    private fun findArcSectorAt(x: Float, y: Float): ArcKeySector? {
+        val dist = hypot(x - arcCenterX, y - arcCenterY)
+        if (dist < arcHubR * 0.85f || dist > arcOuterR * 1.04f) return null
+
+        var deg = Math.toDegrees(atan2((y - arcCenterY).toDouble(), (x - arcCenterX).toDouble())).toFloat()
+        if (deg < 0f) deg += 360f
+
+        // 1. Corrispondenza esatta
+        arcSectors.firstOrNull { s ->
+            dist in s.innerR..s.outerR && isAngleInArc(deg, s.startDeg, s.sweepDeg)
+        }?.let { return it }
+
+        // 2. Tolleranza sui bordi/spazi tra tasti dell'arco
+        return arcSectors.minByOrNull { s ->
+            hypot(x - s.centerX, y - s.centerY)
+        }?.takeIf { hypot(x - it.centerX, y - it.centerY) < ((arcOuterR - arcHubR) / 3.2f) }
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val density = resources.displayMetrics.density
-        val pts = floatArrayOf(event.x, event.y)
-        inverseMatrix.mapPoints(pts)
-        val lx = pts[0]
-        val ly = pts[1]
 
-        // Ignora i tocchi fuori dalla sagoma scolpita
-        val expandedDragHandle = RectF(dragHandleLocalRect).apply { inset(-8f * density, -8f * density) }
-        val inKey = computedKeys.any { it.second.contains(lx, ly) }
-        if (event.actionMasked == MotionEvent.ACTION_DOWN && !inKey && !expandedDragHandle.contains(lx, ly)) {
-            return false
+        // Coordinate locali (per Arco sono direttamente x,y; per Pop-up usano inverseMatrix)
+        val lx: Float
+        val ly: Float
+        if (isArcLayout) {
+            lx = event.x
+            ly = event.y
+        } else {
+            val pts = floatArrayOf(event.x, event.y)
+            inverseMatrix.mapPoints(pts)
+            lx = pts[0]
+            ly = pts[1]
+        }
+
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            if (isArcLayout) {
+                val dist = hypot(lx - arcCenterX, ly - arcCenterY)
+                val hitSector = findArcSectorAt(lx, ly)
+                val inCornerHub = dist <= arcHubR * 0.95f
+                if (hitSector == null && !inCornerHub) {
+                    return false
+                }
+            } else {
+                val expandedDragHandle = RectF(dragHandleLocalRect).apply { inset(-10f * density, -10f * density) }
+                val inKey = computedKeys.any { it.second.contains(lx, ly) }
+                if (!inKey && !expandedDragHandle.contains(lx, ly)) {
+                    return false
+                }
+            }
         }
 
         when (event.actionMasked) {
@@ -641,29 +1010,38 @@ class AngledKeyboardView(
                 swipePathPoints.clear()
                 swipeDrawPath.reset()
 
-                // 1. Linguetta superiore -> trascina la tastiera pop-up in qualsiasi punto dello schermo
-                if (expandedDragHandle.contains(lx, ly)) {
-                    gestureMode = GestureMode.DRAG_POPUP
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    return true
+                val hitKey: KeyDef? = if (isArcLayout) {
+                    val dist = hypot(lx - arcCenterX, ly - arcCenterY)
+                    if (dist <= arcHubR * 0.95f) {
+                        gestureMode = GestureMode.DRAG_POPUP
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        return true
+                    }
+                    findArcSectorAt(lx, ly)?.key
+                } else {
+                    val expandedDragHandle = RectF(dragHandleLocalRect).apply { inset(-10f * density, -10f * density) }
+                    if (expandedDragHandle.contains(lx, ly)) {
+                        gestureMode = GestureMode.DRAG_POPUP
+                        performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        return true
+                    }
+                    computedKeys.firstOrNull { it.second.contains(lx, ly) }?.first
                 }
 
-                // 2. Tasto
-                val hit = computedKeys.firstOrNull { it.second.contains(lx, ly) }
-                if (hit != null) {
-                    activeKey = hit.first
+                if (hitKey != null) {
+                    activeKey = hitKey
                     gestureMode = GestureMode.KEY_TAP
                     lastCursorDragX = lx
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 
-                    if (hit.first.code == "DEL") {
+                    if (hitKey.code == "DEL") {
                         listener.onDeleteChar()
                         handler.postDelayed(repeatDeleteRunnable, 380L)
                     } else {
                         handler.postDelayed(longPressRunnable, 360L)
                     }
 
-                    if (!isSymbolsMode && hit.first.code.length == 1 && hit.first.code[0] in 'a'..'z') {
+                    if (!isSymbolsMode && hitKey.code.length == 1 && hitKey.code[0] in 'a'..'z') {
                         swipePathPoints.add(PointF(lx, ly))
                         swipeDrawPath.moveTo(lx, ly)
                     }
@@ -684,7 +1062,7 @@ class AngledKeyboardView(
 
                     GestureMode.KEY_TAP -> {
                         val moveLocal = hypot(lx - downLocalX, ly - downLocalY)
-                        if (activeKey?.code == "SPACE" && abs(lx - downLocalX) > 14f * density) {
+                        if (activeKey?.code == "SPACE" && moveLocal > 14f * density) {
                             handler.removeCallbacks(longPressRunnable)
                             gestureMode = GestureMode.SPACE_CURSOR
                             lastCursorDragX = lx
@@ -724,7 +1102,8 @@ class AngledKeyboardView(
                 handler.removeCallbacks(repeatDeleteRunnable)
 
                 if (gestureMode == GestureMode.SWIPE_TYPING) {
-                    val candidates = swipeDecoder.decode(swipePathPoints, letterCenters, localClusterWidth / 10f)
+                    val unitW = if (isArcLayout) (arcOuterR - arcHubR) / 4f else localClusterWidth / 10f
+                    val candidates = swipeDecoder.decode(swipePathPoints, letterCenters, unitW)
                     if (candidates.isNotEmpty()) {
                         var word = candidates.first()
                         if (isCapsLock) word = word.uppercase()
@@ -746,7 +1125,7 @@ class AngledKeyboardView(
                 gestureMode = GestureMode.NONE
                 swipePathPoints.clear()
                 swipeDrawPath.reset()
-                rebuildSculptedLayout()
+                if (isArcLayout) rebuildArcLayout() else rebuildSculptedLayout()
                 invalidate()
                 return true
             }
