@@ -1,11 +1,13 @@
 package com.tastiera45.ime
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -14,9 +16,11 @@ import android.graphics.Region
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -39,9 +43,12 @@ import kotlin.math.abs
 import kotlin.math.hypot
 
 internal object MenuPrefs {
+    const val NOTUNE_PKG = "dev.notune.transcribe"
+    const val NOTUNE_PREF_KEY = "IME_PKG:dev.notune.transcribe"
+
     val BUILTIN_IDS = listOf(
-        "TOGGLE_KB", "SWITCH_STYLE", "VOICE", "MOUSE",
-        "CLIPBOARD", "TRANSLATE", "INCOGNITO", "SETTINGS"
+        "LAUNCH_KB_45", "LAUNCH_KB_SAMSUNG", "TOGGLE_KB", "SWITCH_STYLE",
+        "VOICE", "MOUSE", "CLIPBOARD", "TRANSLATE", "INCOGNITO", "SETTINGS"
     )
 
     data class Shortcut(val id: String, val type: String, val label: String, val payload: String)
@@ -99,9 +106,11 @@ internal object MenuPrefs {
         return orderedIds.map { id ->
             val title = if (forSettingsScreen) {
                 when (id) {
-                    "TOGGLE_KB" -> "⊞  Apri / Chiudi Tastiera"
+                    "LAUNCH_KB_45" -> "⌨  Lancia Tastiera 45° (Arco / Pop-up)"
+                    "LAUNCH_KB_SAMSUNG" -> "⌨  Lancia Tastiera Samsung"
+                    "TOGGLE_KB" -> "⊞  Apri / Chiudi Tastiera Attiva"
                     "SWITCH_STYLE" -> "◐  Cambia Stile (Arco / Pop-up)"
-                    "VOICE" -> "◉  Dettatura Vocale"
+                    "VOICE" -> "◉  Dettatura Vocale (Notune Transcribe)"
                     "MOUSE" -> "⌖  Mouse (Remote Cursor)"
                     "CLIPBOARD" -> "⎘  Appunti"
                     "TRANSLATE" -> "文  Traduci"
@@ -115,7 +124,9 @@ internal object MenuPrefs {
                 }
             } else {
                 when (id) {
-                    "TOGGLE_KB" -> if (isKbVisible) "✕   Chiudi tastiera" else "⊞   Tastiera"
+                    "LAUNCH_KB_45" -> "⌨   Tastiera 45°"
+                    "LAUNCH_KB_SAMSUNG" -> "⌨   Tastiera Samsung"
+                    "TOGGLE_KB" -> if (isKbVisible) "✕   Chiudi tastiera" else "⊞   Mostra tastiera"
                     "SWITCH_STYLE" -> if (isArcMode) "◐   Stile: Pop-up Scolpito" else "◑   Stile: Arco Concentrico"
                     "VOICE" -> if (isListening) "■   Ferma dettatura" else "◉   Dettatura"
                     "MOUSE" -> if (isMouseOpen) "✕   Chiudi mouse" else "⌖   Mouse"
@@ -149,6 +160,45 @@ internal object MenuPrefs {
             p.edit().putString("orb_menu_order", list.joinToString(",")).apply()
         }
     }
+
+    fun isPackageInstalled(ctx: Context, pkg: String): Boolean {
+        return try {
+            ctx.packageManager.getPackageInfo(pkg, 0)
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+}
+
+/**
+ * Ponte in-process tra il servizio IME (Tastiera45Service) e l'overlay persistente (FloatingOrbService).
+ */
+internal object OrbBridge {
+    var activeIme: Tastiera45Service? = null
+    var overlayService: FloatingOrbService? = null
+    var lastSwipeCandidates: List<String> = emptyList()
+
+    fun isOverlayActive(): Boolean = overlayService != null
+
+    fun notifySwipeCandidates(candidates: List<String>) {
+        lastSwipeCandidates = candidates
+        if (overlayService != null) {
+            overlayService?.showSwipeCandidates(candidates)
+        } else {
+            activeIme?.showLocalSwipeCandidates(candidates)
+        }
+    }
+
+    fun applySwipeCandidate(word: String) {
+        activeIme?.replaceLastWordWith(word)
+        lastSwipeCandidates = emptyList()
+    }
+
+    fun refreshOverlayState() {
+        overlayService?.refreshPositionAndVisuals()
+        activeIme?.syncOrbVisibility()
+    }
 }
 
 class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActionListener {
@@ -168,7 +218,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private var hoveredExtraId: String? = null
     private var isEditingMenu = false
 
-    private var isKeyboardVisible = false
+    private var isKeyboardVisible = true
     private var isAutoIncognito = false
     private var isManualIncognito = false
     private val clipboardHistory = mutableListOf<String>()
@@ -195,14 +245,21 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
-    private fun isIncognito() = isAutoIncognito || isManualIncognito
+    fun isIncognito() = isAutoIncognito || isManualIncognito
+    fun isKeyboardShown() = isKeyboardVisible
 
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     override fun onCreate() {
         super.onCreate()
+        OrbBridge.activeIme = this
         prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
         prefs.registerOnSharedPreferenceChangeListener(prefListener)
+
+        // Avvia automaticamente l'overlay persistente su tutte le schermate se il permesso è attivo
+        if (Settings.canDrawOverlays(this)) {
+            try { startService(Intent(this, FloatingOrbService::class.java)) } catch (_: Throwable) {}
+        }
 
         val raw = MenuPrefs.getString(prefs, "saved_clipboard", "") ?: ""
         if (raw.isNotEmpty()) clipboardHistory.addAll(raw.split("\u001E").filter { it.isNotEmpty() })
@@ -216,11 +273,19 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     override fun onDestroy() {
+        if (OrbBridge.activeIme === this) OrbBridge.activeIme = null
         mainHandler.removeCallbacksAndMessages(null)
         try { prefs.unregisterOnSharedPreferenceChangeListener(prefListener) } catch (_: Throwable) {}
         try { clipboardManager?.removePrimaryClipChangedListener(clipListener) } catch (_: Throwable) {}
         try { speechRecognizer?.destroy() } catch (_: Throwable) {}
         super.onDestroy()
+    }
+
+    fun syncOrbVisibility() {
+        if (!::cornerOrbView.isInitialized) return
+        // Se l'overlay di sistema è attivo su tutte le schermate, nascondi il duplicato interno
+        cornerOrbView.visibility = if (OrbBridge.isOverlayActive()) View.GONE else View.VISIBLE
+        if (::rootFrame.isInitialized) rootFrame.requestLayout()
     }
 
     private fun syncClipboard() {
@@ -261,6 +326,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             opacity = MenuPrefs.getFloat(prefs, "${p}alpha", 0.0f),
             tiltDeg = MenuPrefs.getFloat(prefs, "${p}tilt", 0f),
             arcRotDeg = if (isArc) MenuPrefs.getFloat(prefs, "arc_rotation", 0f) else 0f,
+            innerRadPct = if (isArc) MenuPrefs.getFloat(prefs, "arc_inner_radius", 0.34f) else 0.34f,
+            rowSpacing = if (isArc) MenuPrefs.getFloat(prefs, "arc_row_spacing", 0.35f) else 0.35f,
             letterScale = MenuPrefs.getFloat(prefs, "${p}letter_size", 1.0f),
             spacingScale = MenuPrefs.getFloat(prefs, "${p}key_spacing", 0.25f),
             shStrength = MenuPrefs.getFloat(prefs, "${p}shadow_strength", 0.92f),
@@ -277,7 +344,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     override fun onCreateInputView(): View {
         val density = resources.displayMetrics.density
-        isKeyboardVisible = !MenuPrefs.getBool(prefs, "orb_only_start", true)
+        isKeyboardVisible = !MenuPrefs.getBool(prefs, "orb_only_start", false)
 
         rootFrame = object : FrameLayout(this) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -297,7 +364,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         keyboardView.visibility = if (isKeyboardVisible) View.VISIBLE else View.GONE
         rootFrame.addView(keyboardView, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
 
-        // 2. Menu ✦ e Appunti
+        // 2. Menu ✦ e Appunti (fallback quando overlay globale non è attivo)
         popupColumnWrapper = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         extraPanelContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -305,7 +372,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             background = darkBoxDrawable(density)
             setPadding((6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt())
         }
-        popupColumnWrapper.addView(extraPanelContainer, LinearLayout.LayoutParams((235 * density).toInt(), -2).apply {
+        popupColumnWrapper.addView(extraPanelContainer, LinearLayout.LayoutParams((240 * density).toInt(), -2).apply {
             bottomMargin = (6 * density).toInt()
         })
 
@@ -317,12 +384,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
         clipboardListLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         clipboardPanel.addView(ScrollView(this).apply { addView(clipboardListLayout) }, LinearLayout.LayoutParams(-1, (145 * density).toInt()))
-        popupColumnWrapper.addView(clipboardPanel, LinearLayout.LayoutParams((235 * density).toInt(), -2).apply {
+        popupColumnWrapper.addView(clipboardPanel, LinearLayout.LayoutParams((240 * density).toInt(), -2).apply {
             bottomMargin = (6 * density).toInt()
         })
         rootFrame.addView(popupColumnWrapper, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
 
-        // 3. Suggerimenti Swipe (sempre sopra il pallino magico ✦)
+        // 3. Suggerimenti Swipe (fallback interno)
         swipeBarContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -332,18 +399,19 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
         rootFrame.addView(swipeBarContainer, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
 
-        // 4. Tasto Magico ✦
-        val orbSize = (44 * density).toInt()
+        // 4. Tasto Magico ✦ (fallback interno se overlay globale non attivo)
+        val orbSize = (46 * density).toInt()
         cornerOrbView = CornerOrbView(this).apply { setIncognitoVisual(isIncognito()) }
         rootFrame.addView(cornerOrbView, FrameLayout.LayoutParams(orbSize, orbSize, Gravity.BOTTOM or Gravity.START))
+        syncOrbVisibility()
 
-        // 5. Mouse Overlay
+        // 5. Mouse Overlay (fallback interno)
         remoteCursorOverlay = RemoteCursorOverlay(
             context = this,
             onClose = { remoteCursorOverlay.visibility = View.GONE; rootFrame.requestLayout() },
             onRequestOpenAccessibility = {
                 Toast.makeText(this, "Attiva 'Tastiera 45° - Remote Cursor' in Accessibilità", Toast.LENGTH_LONG).show()
-                try { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }) } catch (_: Throwable) {}
+                try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }) } catch (_: Throwable) {}
             },
             onTouchableRegionChanged = { rect -> cursorPadRect = rect; rootFrame.requestLayout() }
         ).apply { visibility = View.GONE }
@@ -354,7 +422,9 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        isKeyboardVisible = !MenuPrefs.getBool(prefs, "orb_only_start", true)
+        OrbBridge.activeIme = this
+        // Quando si clicca su un campo di testo, apri la tastiera e mantieni il pulsante visibile
+        isKeyboardVisible = !MenuPrefs.getBool(prefs, "orb_only_start", false)
         isEditingMenu = false
 
         val imeOptions = info?.imeOptions ?: 0
@@ -367,6 +437,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     InputType.TYPE_NUMBER_VARIATION_PASSWORD
                 )
         syncClipboard()
+        OrbBridge.refreshOverlayState()
 
         val actionName = when (imeOptions and EditorInfo.IME_MASK_ACTION) {
             EditorInfo.IME_ACTION_SEARCH -> "SEARCH"
@@ -398,8 +469,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         val edge = (6 * density).toInt()
 
         // 1. Tasto Magico ✦
-        val orbW = cornerOrbView.measuredWidth.takeIf { it > 0 } ?: (44 * density).toInt()
-        val orbH = cornerOrbView.measuredHeight.takeIf { it > 0 } ?: (44 * density).toInt()
+        val orbW = cornerOrbView.measuredWidth.takeIf { it > 0 } ?: (46 * density).toInt()
+        val orbH = cornerOrbView.measuredHeight.takeIf { it > 0 } ?: (46 * density).toInt()
         val orbLeft = ((sw - orbW).coerceAtLeast(0) * orbXPct.coerceIn(0f, 1f)).toInt()
         val orbBottom = orbBottomPx.coerceIn(0, (sh - orbH).coerceAtLeast(0))
         (cornerOrbView.layoutParams as? FrameLayout.LayoutParams)?.apply {
@@ -415,7 +486,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             leftMargin = kbLeft; bottomMargin = kbBottom
         }
 
-        // 3. Barra suggerimenti swipe: SEMPRE sopra il pallino magico ✦
+        // 3. Barra suggerimenti swipe
         if (swipeBarContainer.visibility == View.VISIBLE) {
             swipeBarContainer.measure(
                 View.MeasureSpec.makeMeasureSpec((sw * 0.86f).toInt(), View.MeasureSpec.AT_MOST),
@@ -436,7 +507,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             View.MeasureSpec.makeMeasureSpec(sw, View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(sh, View.MeasureSpec.AT_MOST)
         )
-        val pW = popupColumnWrapper.measuredWidth.coerceAtLeast((235 * density).toInt())
+        val pW = popupColumnWrapper.measuredWidth.coerceAtLeast((240 * density).toInt())
         val pH = popupColumnWrapper.measuredHeight
         val pLeft = if (orbLeft + pW <= sw - edge) orbLeft else (orbLeft + orbW - pW).coerceIn(edge, (sw - pW - edge).coerceAtLeast(edge))
         val swipeSpace = if (swipeBarContainer.visibility == View.VISIBLE) swipeBarContainer.measuredHeight + (8 * density).toInt() else 0
@@ -469,7 +540,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
         }
 
-        addRect(cornerOrbView, pad = 8)
+        if (cornerOrbView.visibility == View.VISIBLE) addRect(cornerOrbView, pad = 8)
         if (keyboardView.visibility == View.VISIBLE && keyboardView.width > 0) {
             keyboardView.appendContourToRegion(outInsets.touchableRegion, keyboardView.left, keyboardView.top)
         }
@@ -482,7 +553,164 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
-    // --- Tasto Magico (✦) ---
+    // --- Azioni richiamabili anche dal Pulsante Magico Globale ---
+
+    fun setKeyboard45Visible(visible: Boolean) {
+        isKeyboardVisible = visible
+        if (::keyboardView.isInitialized) {
+            keyboardView.visibility = if (visible) View.VISIBLE else View.GONE
+            applyPositions()
+        }
+    }
+
+    fun switchToSamsungKeyboard() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager ?: return
+        val enabled = imm.enabledInputMethodList
+        val samsungIme = enabled.firstOrNull {
+            it.packageName.contains("samsung", ignoreCase = true) ||
+                    it.packageName.contains("honeyboard", ignoreCase = true)
+        }
+        if (samsungIme != null) {
+            try {
+                switchInputMethod(samsungIme.id)
+                return
+            } catch (_: Throwable) {
+            }
+        }
+        try { imm.showInputMethodPicker() } catch (_: Throwable) {}
+    }
+
+    fun startVoiceDictation() {
+        val saved = MenuPrefs.getString(prefs, "voice_service_component", MenuPrefs.NOTUNE_PREF_KEY)
+            ?: MenuPrefs.NOTUNE_PREF_KEY
+
+        // 1. Caso Tastiera Vocale / App dedicata (es. Notune Transcribe dev.notune.transcribe)
+        if (saved.startsWith("IME_PKG:") || saved.startsWith("IME_ID:")) {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            val targetPkg = if (saved.startsWith("IME_PKG:")) saved.removePrefix("IME_PKG:") else ""
+            val targetId = if (saved.startsWith("IME_ID:")) saved.removePrefix("IME_ID:") else ""
+
+            val enabledIme = imm?.enabledInputMethodList?.firstOrNull {
+                (targetId.isNotEmpty() && it.id == targetId) || (targetPkg.isNotEmpty() && it.packageName == targetPkg)
+            }
+            if (enabledIme != null) {
+                try {
+                    switchInputMethod(enabledIme.id)
+                    return
+                } catch (_: Throwable) {
+                }
+            }
+
+            val installedIme = imm?.inputMethodList?.firstOrNull {
+                (targetId.isNotEmpty() && it.id == targetId) || (targetPkg.isNotEmpty() && it.packageName == targetPkg)
+            }
+            if (installedIme != null) {
+                Toast.makeText(this, "Attiva '${installedIme.loadLabel(packageManager)}' nelle impostazioni tastiera", Toast.LENGTH_LONG).show()
+                try { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }) } catch (_: Throwable) {}
+                return
+            }
+
+            val pkg = targetPkg.ifEmpty { MenuPrefs.NOTUNE_PKG }
+            if (!MenuPrefs.isPackageInstalled(this, pkg)) {
+                Toast.makeText(this, "Installa Notune Transcribe dal Play Store", Toast.LENGTH_LONG).show()
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$pkg")).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                } catch (_: Throwable) {}
+                return
+            }
+
+            // Fallback Activity dell'app vocale
+            try {
+                val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    setPackage(pkg)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "it-IT")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                if (packageManager.resolveActivity(speechIntent, 0) != null) {
+                    startActivity(speechIntent)
+                    return
+                }
+                packageManager.getLaunchIntentForPackage(pkg)?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }?.let {
+                    startActivity(it)
+                    return
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        // 2. Caso RecognitionService standard (o fallback)
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Consenti il microfono nell'app Tastiera 45°", Toast.LENGTH_LONG).show()
+            try { startActivity(Intent(this, MainActivity::class.java).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }) } catch (_: Throwable) {}
+            return
+        }
+
+        if (isListeningVoice) {
+            isListeningVoice = false
+            try { speechRecognizer?.stopListening() } catch (_: Throwable) {}
+            swipeBarContainer.visibility = View.GONE
+            rootFrame.requestLayout()
+            return
+        }
+
+        val density = resources.displayMetrics.density
+        val comp = if (saved.contains("/")) ComponentName.unflattenFromString(saved) else null
+        try {
+            speechRecognizer?.destroy()
+            speechRecognizer = if (comp != null) SpeechRecognizer.createSpeechRecognizer(this, comp) else SpeechRecognizer.createSpeechRecognizer(this)
+            speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(p: Bundle?) {
+                    isListeningVoice = true
+                    showVoiceStatus("◉  Ascolto... (tocca per fermare)", density)
+                }
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(v: Float) {}
+                override fun onBufferReceived(b: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onError(e: Int) {
+                    isListeningVoice = false
+                    swipeBarContainer.visibility = View.GONE
+                    rootFrame.requestLayout()
+                    Toast.makeText(this@Tastiera45Service, "Errore dettatura ($e). Verifica il motore nelle impostazioni.", Toast.LENGTH_SHORT).show()
+                }
+                override fun onResults(r: Bundle?) {
+                    isListeningVoice = false
+                    swipeBarContainer.visibility = View.GONE
+                    rootFrame.requestLayout()
+                    r?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }?.let {
+                        currentInputConnection?.commitText("$it ", 1)
+                    }
+                }
+                override fun onPartialResults(p: Bundle?) {
+                    val partial = p?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                    if (!partial.isNullOrBlank()) showVoiceStatus("◉  $partial", density)
+                }
+                override fun onEvent(t: Int, p: Bundle?) {}
+            })
+            speechRecognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "it-IT")
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            })
+        } catch (_: Throwable) {
+            Toast.makeText(this, "Impossibile avviare il servizio vocale selezionato.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun showVoiceStatus(msg: String, density: Float) {
+        swipeBarContainer.removeAllViews()
+        swipeBarContainer.addView(TextView(this).apply {
+            text = msg; textSize = 12.5f; setTextColor(Color.WHITE)
+            setPadding((6 * density).toInt(), (3 * density).toInt(), (6 * density).toInt(), (3 * density).toInt())
+            setOnClickListener { startVoiceDictation() }
+        })
+        swipeBarContainer.visibility = View.VISIBLE
+        applyPositions()
+    }
+
+    // --- Tasto Magico (✦) interno (usato solo se l'overlay globale non è attivo) ---
 
     private inner class CornerOrbView(context: Context) : View(context) {
         private var incognito = false
@@ -557,8 +785,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
-    // --- Menu ✦ + Modalità Edit ✎ ---
-
     private fun openMenu() {
         isEditingMenu = false
         rebuildMenu()
@@ -588,15 +814,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
         header.addView(TextView(this).apply {
             text = if (isEditingMenu) "Modifica menu ✦" else "Menu ✦"
-            textSize = 11f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#8E8E93"))
+            textSize = 11f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#8E8E93"))
         }, LinearLayout.LayoutParams(0, -2, 1f))
 
         header.addView(TextView(this).apply {
             text = if (isEditingMenu) "✓ Fine" else "✎ Edit"
-            textSize = 11f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 11f; typeface = Typeface.DEFAULT_BOLD
             setTextColor(if (isEditingMenu) Color.BLACK else Color.WHITE)
             background = GradientDrawable().apply {
                 setColor(if (isEditingMenu) Color.WHITE else Color.parseColor("#242429"))
@@ -616,8 +839,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             val listCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             entries.forEachIndexed { idx, entry ->
                 val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                     background = GradientDrawable().apply { setColor(Color.parseColor("#141418")); cornerRadius = 8f * density }
                     setPadding((6 * density).toInt(), (5 * density).toInt(), (4 * density).toInt(), (5 * density).toInt())
                 }
@@ -627,78 +849,47 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                     rebuildMenu()
                 }
                 row.addView(TextView(this).apply {
-                    text = if (entry.enabled) "☑" else "☐"
-                    textSize = 15f
+                    text = if (entry.enabled) "☑" else "☐"; textSize = 15f
                     setTextColor(if (entry.enabled) Color.WHITE else Color.parseColor("#6E6E73"))
                     setPadding((4 * density).toInt(), 0, (6 * density).toInt(), 0)
                     setOnClickListener(toggle)
                 })
                 row.addView(TextView(this).apply {
-                    text = entry.title
-                    textSize = 12f
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
+                    text = entry.title; textSize = 12f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
                     setTextColor(if (entry.enabled) Color.WHITE else Color.parseColor("#6E6E73"))
                     setOnClickListener(toggle)
                 }, LinearLayout.LayoutParams(0, -2, 1f))
 
                 row.addView(TextView(this).apply {
-                    text = "▲"
-                    textSize = 11.5f
+                    text = "▲"; textSize = 11.5f
                     setTextColor(if (idx > 0) Color.WHITE else Color.parseColor("#3A3A40"))
                     setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
-                    setOnClickListener { v ->
-                        if (idx > 0) {
-                            v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            MenuPrefs.moveItem(prefs, entry.id, -1)
-                            rebuildMenu()
-                        }
-                    }
+                    setOnClickListener { v -> if (idx > 0) { v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); MenuPrefs.moveItem(prefs, entry.id, -1); rebuildMenu() } }
                 })
                 row.addView(TextView(this).apply {
-                    text = "▼"
-                    textSize = 11.5f
+                    text = "▼"; textSize = 11.5f
                     setTextColor(if (idx < entries.lastIndex) Color.WHITE else Color.parseColor("#3A3A40"))
                     setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
-                    setOnClickListener { v ->
-                        if (idx < entries.lastIndex) {
-                            v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            MenuPrefs.moveItem(prefs, entry.id, +1)
-                            rebuildMenu()
-                        }
-                    }
+                    setOnClickListener { v -> if (idx < entries.lastIndex) { v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); MenuPrefs.moveItem(prefs, entry.id, +1); rebuildMenu() } }
                 })
                 listCol.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (3 * density).toInt() })
             }
             extraPanelContainer.addView(ScrollView(this).apply { addView(listCol) }, LinearLayout.LayoutParams(-1, (250 * density).toInt()))
         } else {
             val visible = entries.filter { it.enabled }
-            if (visible.isEmpty()) {
-                extraPanelContainer.addView(TextView(this).apply {
-                    text = "Nessun tasto attivo.\nTocca '✎ Edit' in alto a destra."
-                    textSize = 12f
-                    setTextColor(Color.parseColor("#8E8E93"))
-                    setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
-                })
-            } else {
-                visible.forEachIndexed { idx, entry ->
-                    val tv = TextView(this).apply {
-                        text = entry.title
-                        textSize = 13f
-                        setTextColor(Color.WHITE)
-                        background = GradientDrawable().apply { setColor(Color.TRANSPARENT); cornerRadius = 8f * density }
-                        setPadding((10 * density).toInt(), (7 * density).toInt(), (10 * density).toInt(), (7 * density).toInt())
-                        setOnClickListener {
-                            extraPanelContainer.visibility = View.GONE
-                            rootFrame.requestLayout()
-                            runMenuAction(entry.id)
-                        }
+            visible.forEachIndexed { idx, entry ->
+                val tv = TextView(this).apply {
+                    text = entry.title; textSize = 13f; setTextColor(Color.WHITE)
+                    background = GradientDrawable().apply { setColor(Color.TRANSPARENT); cornerRadius = 8f * density }
+                    setPadding((10 * density).toInt(), (7 * density).toInt(), (10 * density).toInt(), (7 * density).toInt())
+                    setOnClickListener {
+                        extraPanelContainer.visibility = View.GONE
+                        rootFrame.requestLayout()
+                        runMenuAction(entry.id)
                     }
-                    extraPanelContainer.addView(tv, LinearLayout.LayoutParams(-1, -2).apply {
-                        if (idx < visible.lastIndex) bottomMargin = (2 * density).toInt()
-                    })
-                    extraOptionViews.add(entry.id to tv)
                 }
+                extraPanelContainer.addView(tv, LinearLayout.LayoutParams(-1, -2).apply { if (idx < visible.lastIndex) bottomMargin = (2 * density).toInt() })
+                extraOptionViews.add(entry.id to tv)
             }
         }
     }
@@ -720,21 +911,17 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         hoveredExtraId = match
     }
 
-    private fun runMenuAction(id: String) {
+    fun runMenuAction(id: String) {
         when (id) {
-            "TOGGLE_KB" -> {
-                isKeyboardVisible = !isKeyboardVisible
-                keyboardView.visibility = if (isKeyboardVisible) View.VISIBLE else View.GONE
-                applyPositions()
-            }
+            "LAUNCH_KB_45" -> setKeyboard45Visible(true)
+            "LAUNCH_KB_SAMSUNG" -> switchToSamsungKeyboard()
+            "TOGGLE_KB" -> setKeyboard45Visible(!isKeyboardVisible)
             "SWITCH_STYLE" -> {
                 prefs.edit().putBoolean("kb_arc_mode", !keyboardView.isArcLayoutMode()).apply()
                 applySavedConfig()
-                isKeyboardVisible = true
-                keyboardView.visibility = View.VISIBLE
-                applyPositions()
+                setKeyboard45Visible(true)
             }
-            "VOICE" -> toggleVoice()
+            "VOICE" -> startVoiceDictation()
             "MOUSE" -> {
                 if (remoteCursorOverlay.visibility == View.VISIBLE) {
                     remoteCursorOverlay.visibility = View.GONE
@@ -746,39 +933,42 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
             "CLIPBOARD" -> toggleClipboard()
             "TRANSLATE" -> openProcessTextChooser("Traduci testo", null)
-            "INCOGNITO" -> {
-                isManualIncognito = !isManualIncognito
-                cornerOrbView.setIncognitoVisual(isIncognito())
-                if (!isIncognito()) syncClipboard()
-                Toast.makeText(this, if (isIncognito()) "Incognito ON" else "Incognito OFF", Toast.LENGTH_SHORT).show()
-            }
+            "INCOGNITO" -> toggleManualIncognito()
             "SETTINGS" -> try {
                 startActivity(Intent(this, MainActivity::class.java).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
             } catch (_: Throwable) {}
-            else -> {
-                val sc = MenuPrefs.loadShortcuts(prefs).firstOrNull { it.id == id } ?: return
-                when (sc.type) {
-                    "SAMSUNG_ASSIST" -> openSamsungAssist()
-                    "INTENT_URI" -> try {
-                        startActivity(Intent.parseUri(sc.payload, Intent.URI_INTENT_SCHEME).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
-                    } catch (_: Throwable) { Toast.makeText(this, "Impossibile avviare '${sc.label}'", Toast.LENGTH_SHORT).show() }
-                    "APP" -> try {
-                        packageManager.getLaunchIntentForPackage(sc.payload)?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }?.let { startActivity(it) }
-                    } catch (_: Throwable) {}
-                    else -> currentInputConnection?.commitText(sc.payload, 1)
+            else -> runCustomShortcut(id)
+        }
+    }
+
+    fun toggleManualIncognito() {
+        isManualIncognito = !isManualIncognito
+        if (::cornerOrbView.isInitialized) cornerOrbView.setIncognitoVisual(isIncognito())
+        OrbBridge.refreshOverlayState()
+        if (!isIncognito()) syncClipboard()
+        Toast.makeText(this, if (isIncognito()) "Incognito ON" else "Incognito OFF", Toast.LENGTH_SHORT).show()
+    }
+
+    fun runCustomShortcut(id: String) {
+        val sc = MenuPrefs.loadShortcuts(prefs).firstOrNull { it.id == id } ?: return
+        when (sc.type) {
+            "SAMSUNG_ASSIST" -> {
+                for (pkg in listOf("com.samsung.android.honeyboard", "com.samsung.android.smartsuggestions")) {
+                    if (openProcessTextChooser("Assistente", pkg)) return
                 }
+                openProcessTextChooser("Assistente di scrittura", null)
             }
+            "INTENT_URI" -> try {
+                startActivity(Intent.parseUri(sc.payload, Intent.URI_INTENT_SCHEME).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+            } catch (_: Throwable) { Toast.makeText(this, "Impossibile avviare '${sc.label}'", Toast.LENGTH_SHORT).show() }
+            "APP" -> try {
+                packageManager.getLaunchIntentForPackage(sc.payload)?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }?.let { startActivity(it) }
+            } catch (_: Throwable) {}
+            else -> currentInputConnection?.commitText(sc.payload, 1)
         }
     }
 
-    private fun openSamsungAssist() {
-        for (pkg in listOf("com.samsung.android.honeyboard", "com.samsung.android.smartsuggestions")) {
-            if (openProcessTextChooser("Assistente", pkg)) return
-        }
-        openProcessTextChooser("Assistente di scrittura", null)
-    }
-
-    private fun openProcessTextChooser(title: String, pkg: String?): Boolean {
+    fun openProcessTextChooser(title: String, pkg: String?): Boolean {
         val ic = currentInputConnection
         val text = ic?.getSelectedText(0)?.toString()?.takeIf { it.isNotEmpty() }
             ?: ic?.getTextBeforeCursor(300, 0)?.toString().orEmpty()
@@ -802,11 +992,10 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
-    // --- Azioni Tastiera, Appunti, Dettatura, Swipe e Cursore 2D ---
-
     override fun onCommitText(text: String) {
         if (extraPanelContainer.visibility == View.VISIBLE && !isEditingMenu) extraPanelContainer.visibility = View.GONE
         if (!isListeningVoice && swipeBarContainer.visibility == View.VISIBLE) swipeBarContainer.visibility = View.GONE
+        OrbBridge.overlayService?.hidePopupsOnTyping()
         currentInputConnection?.commitText(text, 1)
     }
 
@@ -842,8 +1031,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         header.addView(TextView(this).apply {
-            text = if (isIncognito()) "Incognito ON" else "Appunti"
-            textSize = 11.5f; setTextColor(Color.parseColor("#8E8E93"))
+            text = if (isIncognito()) "Incognito ON" else "Appunti"; textSize = 11.5f; setTextColor(Color.parseColor("#8E8E93"))
         }, LinearLayout.LayoutParams(0, -2, 1f))
         if (clipboardHistory.isNotEmpty()) {
             header.addView(TextView(this).apply {
@@ -882,54 +1070,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         applyPositions()
     }
 
-    private fun toggleVoice() {
-        if (isListeningVoice) {
-            isListeningVoice = false
-            try { speechRecognizer?.stopListening() } catch (_: Throwable) {}
-            swipeBarContainer.visibility = View.GONE
-            rootFrame.requestLayout()
-            return
-        }
-        val density = resources.displayMetrics.density
-        val comp = MenuPrefs.getString(prefs, "voice_service_component", null)?.let { ComponentName.unflattenFromString(it) }
-        try {
-            speechRecognizer?.destroy()
-            speechRecognizer = if (comp != null) SpeechRecognizer.createSpeechRecognizer(this, comp) else SpeechRecognizer.createSpeechRecognizer(this)
-            speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(p: Bundle?) {
-                    isListeningVoice = true
-                    swipeBarContainer.removeAllViews()
-                    swipeBarContainer.addView(TextView(this@Tastiera45Service).apply {
-                        text = "◉  Ascolto... (tocca per fermare)"; textSize = 12.5f; setTextColor(Color.WHITE)
-                        setPadding((6 * density).toInt(), (3 * density).toInt(), (6 * density).toInt(), (3 * density).toInt())
-                        setOnClickListener { toggleVoice() }
-                    })
-                    swipeBarContainer.visibility = View.VISIBLE
-                    applyPositions()
-                }
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(v: Float) {}
-                override fun onBufferReceived(b: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onError(e: Int) { isListeningVoice = false; swipeBarContainer.visibility = View.GONE; rootFrame.requestLayout() }
-                override fun onResults(r: Bundle?) {
-                    isListeningVoice = false; swipeBarContainer.visibility = View.GONE; rootFrame.requestLayout()
-                    r?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }?.let {
-                        currentInputConnection?.commitText("$it ", 1)
-                    }
-                }
-                override fun onPartialResults(p: Bundle?) {}
-                override fun onEvent(t: Int, p: Bundle?) {}
-            })
-            speechRecognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "it-IT")
-            })
-        } catch (_: Throwable) {
-            Toast.makeText(this, "Apri l'app per abilitare il microfono.", Toast.LENGTH_LONG).show()
-        }
-    }
-
     override fun onMoveTextCursor(deltaXSteps: Int, deltaYSteps: Int) {
         val ic = currentInputConnection ?: return
         if (deltaXSteps != 0) {
@@ -949,6 +1089,18 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     override fun onSwipeWordDecoded(candidates: List<String>) {
+        OrbBridge.notifySwipeCandidates(candidates)
+    }
+
+    fun replaceLastWordWith(word: String) {
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(40, 0)?.toString().orEmpty()
+        val del = before.length - (before.trimEnd().lastIndexOf(' ') + 1)
+        if (del > 0) ic.deleteSurroundingText(del, 0)
+        ic.commitText("$word ", 1)
+    }
+
+    fun showLocalSwipeCandidates(candidates: List<String>) {
         if (candidates.size <= 1) {
             swipeBarContainer.visibility = View.GONE
             return
@@ -959,17 +1111,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
         candidates.forEachIndexed { idx, word ->
             row.addView(TextView(this).apply {
-                text = word
-                textSize = 13f
+                text = word; textSize = 13f
                 typeface = if (idx == 0) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
                 setTextColor(Color.WHITE)
                 setPadding((10 * density).toInt(), (4 * density).toInt(), (10 * density).toInt(), (4 * density).toInt())
                 setOnClickListener {
-                    val ic = currentInputConnection ?: return@setOnClickListener
-                    val before = ic.getTextBeforeCursor(40, 0)?.toString().orEmpty()
-                    val del = before.length - (before.trimEnd().lastIndexOf(' ') + 1)
-                    if (del > 0) ic.deleteSurroundingText(del, 0)
-                    ic.commitText("$word ", 1)
+                    replaceLastWordWith(word)
                     swipeBarContainer.visibility = View.GONE
                     rootFrame.requestLayout()
                 }
@@ -981,10 +1128,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             setOnClickListener { swipeBarContainer.visibility = View.GONE; rootFrame.requestLayout() }
         })
 
-        swipeBarContainer.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(row)
-        })
+        swipeBarContainer.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) })
         swipeBarContainer.visibility = View.VISIBLE
         applyPositions()
     }
