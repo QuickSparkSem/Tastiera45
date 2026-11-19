@@ -60,7 +60,8 @@ class AngledKeyboardView(
 
     private data class ArcMetrics(
         val outerR: Float,
-        val hubR: Float,
+        val innerLimitR: Float,
+        val gripR: Float,
         val startDeg: Float,
         val sweepDeg: Float,
         val bounds: RectF
@@ -72,6 +73,8 @@ class AngledKeyboardView(
     private var bgOpacity = 0.0f
     private var tiltAngleDeg = 0f
     private var arcRotationDeg = 0f
+    private var arcInnerRadiusPct = 0.34f
+    private var arcRowSpacingScale = 0.35f
     private var letterSizeScale = 1.0f
     private var keySpacingScale = 0.25f
     private var shadowStrength = 0.92f
@@ -95,7 +98,8 @@ class AngledKeyboardView(
     private var arcCenterX = 0f
     private var arcCenterY = 0f
     private var arcOuterR = 0f
-    private var arcHubR = 0f
+    private var arcInnerLimitR = 0f
+    private var arcGripR = 0f
     private var arcFanStartDeg = 180f
     private var arcFanSweepDeg = 86f
     private val arcSectors = mutableListOf<ArcSector>()
@@ -216,6 +220,8 @@ class AngledKeyboardView(
         opacity: Float,
         tiltDeg: Float,
         arcRotDeg: Float,
+        innerRadPct: Float,
+        rowSpacing: Float,
         letterScale: Float,
         spacingScale: Float,
         shStrength: Float,
@@ -227,6 +233,8 @@ class AngledKeyboardView(
         bgOpacity = opacity.coerceIn(0f, 1f)
         tiltAngleDeg = tiltDeg.coerceIn(-90f, 90f)
         arcRotationDeg = arcRotDeg.coerceIn(-180f, 180f)
+        arcInnerRadiusPct = innerRadPct.coerceIn(0.15f, 0.72f)
+        arcRowSpacingScale = rowSpacing.coerceIn(0f, 1f)
         letterSizeScale = letterScale.coerceIn(0.60f, 1.50f)
         keySpacingScale = spacingScale.coerceIn(0f, 1f)
         shadowStrength = shStrength.coerceIn(0f, 1f)
@@ -322,7 +330,8 @@ class AngledKeyboardView(
         val density = resources.displayMetrics.density
         val screenW = resources.displayMetrics.widthPixels.coerceAtLeast(320)
         val outerR = (screenW * scaleFactor * 0.96f).coerceAtLeast(200f * density)
-        val hubR = (outerR * 0.24f).coerceAtLeast(20f * density)
+        val innerLimitR = (outerR * arcInnerRadiusPct).coerceIn(28f * density, outerR * 0.72f)
+        val gripR = (innerLimitR * 0.62f).coerceAtLeast(18f * density)
 
         val sweep = (86f + tiltAngleDeg * 0.24f).coerceIn(64f, 90f)
         val halfSpare = ((90f - sweep) / 2f).coerceAtLeast(0f)
@@ -330,7 +339,7 @@ class AngledKeyboardView(
         val baseStart = if (isArcLeftSide) 270f else 180f
         val startDeg = baseStart + halfSpare + tiltShift + arcRotationDeg
 
-        val innerR = hubR * 0.35f
+        val contourInnerR = (gripR * 0.45f).coerceAtLeast(10f * density)
         val endDeg = startDeg + sweep
         val xs = mutableListOf<Float>()
         val ys = mutableListOf<Float>()
@@ -338,7 +347,7 @@ class AngledKeyboardView(
             val rad = Math.toRadians(deg.toDouble())
             val c = cos(rad).toFloat()
             val s = sin(rad).toFloat()
-            xs.add(innerR * c); ys.add(innerR * s)
+            xs.add(contourInnerR * c); ys.add(contourInnerR * s)
             xs.add(outerR * c); ys.add(outerR * s)
         }
         for (cardinal in listOf(0f, 90f, 180f, 270f)) {
@@ -354,7 +363,7 @@ class AngledKeyboardView(
             xs.maxOrNull() ?: outerR,
             ys.maxOrNull() ?: outerR
         )
-        return ArcMetrics(outerR, hubR, startDeg, sweep, bounds)
+        return ArcMetrics(outerR, innerLimitR, gripR, startDeg, sweep, bounds)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -406,27 +415,30 @@ class AngledKeyboardView(
         val m = computeArcMetrics()
 
         arcOuterR = m.outerR
-        arcHubR = m.hubR
+        arcInnerLimitR = m.innerLimitR
+        arcGripR = m.gripR
         arcFanStartDeg = m.startDeg
         arcFanSweepDeg = m.sweepDeg
         arcCenterX = -m.bounds.left + pad
         arcCenterY = -m.bounds.top + pad
 
         val outerOval = RectF(arcCenterX - arcOuterR, arcCenterY - arcOuterR, arcCenterX + arcOuterR, arcCenterY + arcOuterR)
-        val innerHubR = arcHubR * 0.35f
-        val innerOval = RectF(arcCenterX - innerHubR, arcCenterY - innerHubR, arcCenterX + innerHubR, arcCenterY + innerHubR)
+        val contourInnerR = (arcGripR * 0.45f).coerceAtLeast(10f * density)
+        val innerOval = RectF(arcCenterX - contourInnerR, arcCenterY - contourInnerR, arcCenterX + contourInnerR, arcCenterY + contourInnerR)
         arcContourPath.arcTo(outerOval, arcFanStartDeg, arcFanSweepDeg, true)
         arcContourPath.arcTo(innerOval, arcFanStartDeg + arcFanSweepDeg, -arcFanSweepDeg, false)
         arcContourPath.close()
 
-        val totalRadial = (arcOuterR - arcHubR).coerceAtLeast(40f * density)
-        val ringGap = (6f * density * keySpacingScale).coerceIn(0f, totalRadial * 0.12f)
+        // Fascia radiale tra arcInnerLimitR e arcOuterR: regolando Raggio interno e Spazio radiale
+        // le righe più interne si spostano verso l'esterno (più in alto) allargando i caratteri!
+        val totalRadial = (arcOuterR - arcInnerLimitR).coerceAtLeast(36f * density)
+        val ringGap = (totalRadial * 0.16f * arcRowSpacingScale).coerceIn(0f, totalRadial * 0.18f)
         val bandThickness = ((totalRadial - ringGap * 3f) / 4f).coerceAtLeast(6f * density)
         val angularGap = 2.4f * keySpacingScale
 
         getRows().forEachIndexed { rowIndex, rowKeys ->
             val outerR = arcOuterR - rowIndex * (bandThickness + ringGap)
-            val innerR = (outerR - bandThickness).coerceAtLeast(arcHubR * 0.5f)
+            val innerR = (outerR - bandThickness).coerceAtLeast(arcInnerLimitR * 0.85f)
             val midR = (outerR + innerR) / 2f
 
             val inset = when (rowIndex) { 0 -> 0f; 1 -> 1.5f; 2 -> 1.0f; else -> 2.5f }
@@ -571,7 +583,7 @@ class AngledKeyboardView(
             canvas.drawPath(arcContourPath, bgPaint)
         }
 
-        val unit = (((arcOuterR - arcHubR) / 4f) * letterSizeScale).coerceAtLeast(10f * density)
+        val unit = (((arcOuterR - arcInnerLimitR) / 4f) * letterSizeScale).coerceIn(10f * density, 34f * density)
         subTextPaint.textSize = (unit * 0.24f).coerceAtLeast(7f * density)
 
         for (s in arcSectors) {
@@ -588,10 +600,10 @@ class AngledKeyboardView(
 
         // Punto di presa (pivot di rotazione e trascinamento dell'arco)
         val gripRad = Math.toRadians((arcFanStartDeg + arcFanSweepDeg / 2f).toDouble())
-        val gx = arcCenterX + (arcHubR * 0.55f * cos(gripRad)).toFloat()
-        val gy = arcCenterY + (arcHubR * 0.55f * sin(gripRad)).toFloat()
+        val gx = arcCenterX + (arcGripR * 0.72f * cos(gripRad)).toFloat()
+        val gy = arcCenterY + (arcGripR * 0.72f * sin(gripRad)).toFloat()
         drawUnderShadow(canvas, gx, gy, 10f * density, density)
-        canvas.drawCircle(gx, gy, 3.8f * density, pillPaint)
+        canvas.drawCircle(gx, gy, 4.0f * density, pillPaint)
 
         if (gestureMode == GestureMode.SWIPE && swipePoints.size > 1) {
             canvas.drawPath(swipeDrawPath, swipeTrailPaint)
@@ -815,9 +827,9 @@ class AngledKeyboardView(
     // =========================================================================
 
     private fun findArcSector(x: Float, y: Float): ArcSector? {
-        if (arcSectors.isEmpty() || arcOuterR <= arcHubR) return null
+        if (arcSectors.isEmpty() || arcOuterR <= arcInnerLimitR * 0.7f) return null
         val dist = hypot(x - arcCenterX, y - arcCenterY)
-        if (dist < arcHubR * 0.85f || dist > arcOuterR * 1.04f) return null
+        if (dist < arcInnerLimitR * 0.75f || dist > arcOuterR * 1.04f) return null
 
         var deg = Math.toDegrees(atan2((y - arcCenterY).toDouble(), (x - arcCenterX).toDouble())).toFloat()
         if (deg < 0f) deg += 360f
@@ -827,7 +839,7 @@ class AngledKeyboardView(
             dist in s.innerR..s.outerR && diff <= s.sweepDeg
         }?.let { return it }
 
-        val snap = ((arcOuterR - arcHubR) / 3f).coerceAtLeast(10f)
+        val snap = ((arcOuterR - arcInnerLimitR) / 3f).coerceAtLeast(10f)
         return arcSectors.minByOrNull { hypot(x - it.cx, y - it.cy) }
             ?.takeIf { hypot(x - it.cx, y - it.cy) < snap }
     }
@@ -846,8 +858,8 @@ class AngledKeyboardView(
 
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             if (isArcLayout) {
-                val inHub = hypot(lx - arcCenterX, ly - arcCenterY) <= arcHubR * 0.95f
-                if (!inHub && findArcSector(lx, ly) == null) return false
+                val inGrip = hypot(lx - arcCenterX, ly - arcCenterY) <= arcGripR * 1.15f
+                if (!inGrip && findArcSector(lx, ly) == null) return false
             } else {
                 val handle = RectF(dragHandleRect).apply { inset(-10f * density, -10f * density) }
                 if (!handle.contains(lx, ly) && popupKeys.none { it.second.contains(lx, ly) }) return false
@@ -864,7 +876,7 @@ class AngledKeyboardView(
                 swipeDrawPath.reset()
 
                 val hit: KeyDef? = if (isArcLayout) {
-                    if (hypot(lx - arcCenterX, ly - arcCenterY) <= arcHubR * 0.95f) {
+                    if (hypot(lx - arcCenterX, ly - arcCenterY) <= arcGripR * 1.15f) {
                         gestureMode = GestureMode.DRAG
                         performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                         return true
