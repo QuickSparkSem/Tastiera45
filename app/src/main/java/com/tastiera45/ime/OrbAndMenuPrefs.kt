@@ -1,11 +1,18 @@
 package com.tastiera45.ime
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.InputMethodSubtype
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -32,28 +39,52 @@ object OrbBridge {
 }
 
 /**
- * Activity trasparente istantanea per aprire il selettore nativo Android
- * dei metodi di immissione anche quando la tastiera non è in primo piano.
+ * Activity trasparente dedicata all'apertura del selettore nativo Android
+ * dei metodi di immissione da qualsiasi schermata o tastiera (inclusa Samsung).
+ * Resta attiva finché l'utente non sceglie una tastiera o chiude la finestra.
  */
 class ImePickerActivity : Activity() {
-    private var shown = false
+    private var pickerOpened = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val safetyFinish = Runnable {
+        if (!isFinishing) {
+            finish()
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setBackgroundDrawableResource(android.R.color.transparent)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        handler.postDelayed(safetyFinish, 15000L)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && !shown) {
-            shown = true
-            try {
-                (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
-                    ?.showInputMethodPicker()
-            } catch (_: Throwable) {
-            }
-            window.decorView.postDelayed({ finish() }, 250L)
+        if (!hasFocus) return
+        if (!pickerOpened) {
+            pickerOpened = true
+            handler.postDelayed({
+                try {
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                    imm?.showInputMethodPicker()
+                } catch (_: Throwable) {
+                    finish()
+                }
+            }, 110L)
+        } else {
+            handler.removeCallbacks(safetyFinish)
+            finish()
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
         }
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
     }
 }
 
@@ -68,7 +99,6 @@ object MenuPrefs {
         DefaultEntry("LAUNCH_KB_45", "Tastiera 45°", true),
         DefaultEntry("LAUNCH_KB_SAMSUNG", "Tastiera Samsung", true),
         DefaultEntry("TOGGLE_KB", "Mostra / Nascondi Tastiera", true),
-        DefaultEntry("SWITCH_STYLE", "Cambia Arco / Pop-up", true),
         DefaultEntry("MOUSE", "Cursore Mouse", true),
         DefaultEntry("CLIPBOARD", "Appunti", true),
         DefaultEntry("TRANSLATE", "Traduci", true),
@@ -85,7 +115,11 @@ object MenuPrefs {
         try {
             context.startActivity(
                 Intent(context, ImePickerActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                            Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                    )
                 }
             )
         } catch (_: Throwable) {
@@ -95,6 +129,67 @@ object MenuPrefs {
             } catch (_: Throwable) {
             }
         }
+    }
+
+    fun switchToImeOrPicker(
+        context: Context,
+        targetPackageMatch: (String) -> Boolean,
+        preferCompactSubtype: Boolean = false
+    ) {
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        val targetImi = imm?.enabledInputMethodList?.firstOrNull { targetPackageMatch(it.packageName) }
+
+        var chosenSubtype: InputMethodSubtype? = null
+        if (targetImi != null && preferCompactSubtype) {
+            for (i in 0 until targetImi.subtypeCount) {
+                val st = targetImi.getSubtypeAt(i)
+                val label = st.getDisplayName(
+                    context,
+                    targetImi.packageName,
+                    targetImi.serviceInfo.applicationInfo
+                ).toString()
+                val meta = "${st.mode} ${st.extraValue} $label".lowercase()
+                if (st.mode.equals("voice", ignoreCase = true) ||
+                    meta.contains("compact") || meta.contains("compatta") ||
+                    meta.contains("mini") || meta.contains("float") ||
+                    meta.contains("overlay") || meta.contains("pill") || meta.contains("bar")
+                ) {
+                    chosenSubtype = st
+                    break
+                }
+            }
+        }
+
+        val activeIme = OrbBridge.activeIme
+        if (activeIme != null && targetImi != null) {
+            try {
+                if (chosenSubtype != null) {
+                    activeIme.switchInputMethod(targetImi.id, chosenSubtype)
+                } else {
+                    activeIme.switchInputMethod(targetImi.id)
+                }
+                return
+            } catch (_: Throwable) {
+            }
+        }
+
+        // Se un'altra tastiera (es. Samsung) è attiva, proviamo cambio diretto se permesso ADB presente,
+        // altrimenti apriamo subito il selettore nativo Android tramite ImePickerActivity.
+        if (targetImi != null &&
+            context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                Settings.Secure.putString(
+                    context.contentResolver,
+                    Settings.Secure.DEFAULT_INPUT_METHOD,
+                    targetImi.id
+                )
+                return
+            } catch (_: Throwable) {
+            }
+        }
+
+        openSystemImePicker(context)
     }
 
     fun getBool(p: SharedPreferences, key: String, def: Boolean): Boolean =
@@ -177,7 +272,6 @@ object MenuPrefs {
     fun getEntries(
         p: SharedPreferences,
         isKbVisible: Boolean,
-        isArcMode: Boolean,
         isListening: Boolean,
         isMouseOpen: Boolean,
         isIncognito: Boolean
@@ -188,7 +282,7 @@ object MenuPrefs {
         val savedOrder = (p.getString("menu_order", "") ?: "")
             .split(",")
             .map { it.trim() }
-            .filter { it.isNotEmpty() }
+            .filter { it.isNotEmpty() && it != "SWITCH_STYLE" }
 
         val orderedIds = LinkedHashSet<String>()
         for (id in savedOrder) {
@@ -214,7 +308,6 @@ object MenuPrefs {
 
             val title = when (id) {
                 "TOGGLE_KB" -> if (isKbVisible) "Nascondi Tastiera" else "Mostra Tastiera"
-                "SWITCH_STYLE" -> if (isArcMode) "Passa a Pop-up" else "Passa a Arco"
                 "VOICE" -> if (isListening) "Stop Dettatura" else "Dettatura Vocale (Compatta)"
                 "MOUSE" -> if (isMouseOpen) "Chiudi Cursore" else "Cursore Mouse"
                 "INCOGNITO" -> if (isIncognito) "Esci da Incognito" else "Modalità Incognito"
@@ -246,7 +339,6 @@ object MenuPrefs {
         val current = getEntries(
             p = p,
             isKbVisible = false,
-            isArcMode = true,
             isListening = false,
             isMouseOpen = false,
             isIncognito = false
