@@ -17,7 +17,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
-import android.speech.RecognizerIntent
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -114,7 +113,8 @@ class FloatingOrbService : Service() {
         val sw = resources.displayMetrics.widthPixels.coerceAtLeast(320)
         val sh = resources.displayMetrics.heightPixels.coerceAtLeast(320)
         val orbXPct = MenuPrefs.getFloat(prefs, "orb_x_pct", 0.96f).coerceIn(0f, 1f)
-        val orbBottom = MenuPrefs.getInt(prefs, "orb_bottom_offset", (36 * density).toInt()).coerceIn(0, (sh - orbParams.height).coerceAtLeast(0))
+        val orbBottom = MenuPrefs.getInt(prefs, "orb_bottom_offset", (36 * density).toInt())
+            .coerceIn(0, (sh - orbParams.height).coerceAtLeast(0))
 
         orbParams.x = ((sw - orbParams.width).coerceAtLeast(0) * orbXPct).toInt()
         orbParams.y = orbBottom
@@ -469,21 +469,21 @@ class FloatingOrbService : Service() {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
 
         when (id) {
+            "PICK_IME" -> MenuPrefs.openSystemImePicker(this)
             "LAUNCH_KB_45" -> {
                 if (ime != null) {
                     ime.setKeyboard45Visible(true)
                     @Suppress("DEPRECATION")
                     try { imm?.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0) } catch (_: Throwable) {}
                 } else {
-                    try { imm?.showInputMethodPicker() } catch (_: Throwable) {}
+                    MenuPrefs.openSystemImePicker(this)
                 }
             }
             "LAUNCH_KB_SAMSUNG" -> {
                 if (ime != null) {
                     ime.switchToSamsungKeyboard()
                 } else {
-                    @Suppress("DEPRECATION")
-                    try { imm?.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0) } catch (_: Throwable) {}
+                    MenuPrefs.openSystemImePicker(this)
                 }
             }
             "TOGGLE_KB" -> {
@@ -500,28 +500,14 @@ class FloatingOrbService : Service() {
                 if (ime != null) {
                     ime.setKeyboard45Visible(true)
                 } else {
-                    try { imm?.showInputMethodPicker() } catch (_: Throwable) {}
+                    MenuPrefs.openSystemImePicker(this)
                 }
             }
             "VOICE" -> {
                 if (ime != null) {
-                    ime.startVoiceDictation()
+                    ime.switchToNotuneVoice()
                 } else {
-                    val pkg = MenuPrefs.NOTUNE_PKG
-                    try {
-                        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                            setPackage(pkg)
-                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "it-IT")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        if (packageManager.resolveActivity(i, 0) != null) {
-                            startActivity(i)
-                        } else {
-                            packageManager.getLaunchIntentForPackage(pkg)?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }?.let { startActivity(it) }
-                                ?: Toast.makeText(this, "Apri un campo di testo o installa Notune Transcribe", Toast.LENGTH_SHORT).show()
-                        }
-                    } catch (_: Throwable) {}
+                    MenuPrefs.openSystemImePicker(this)
                 }
             }
             "MOUSE" -> toggleGlobalCursor()
