@@ -1,70 +1,18 @@
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<!-- Aggiungi fuori da <application>, vicino agli altri <uses-permission> -->
+<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.VIBRATE" />
+<queries>
+    <package android:name="dev.notune.transcribe" />
+    <package android:name="com.samsung.android.honeyboard" />
+    <intent>
+        <action android:name="android.speech.RecognitionService" />
+    </intent>
+    <intent>
+        <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+    </intent>
+</queries>
 
-    <queries>
-        <intent>
-            <action android:name="android.speech.RecognitionService" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT" />
-            <data android:mimeType="text/plain" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.CREATE_SHORTCUT" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
-            <category android:name="android.intent.category.LAUNCHER" />
-        </intent>
-        <package android:name="com.google.android.apps.translate" />
-        <package android:name="com.samsung.android.app.interpreter" />
-        <package android:name="com.samsung.android.honeyboard" />
-        <package android:name="com.samsung.android.smartsuggestions" />
-    </queries>
-
-    <application
-        android:allowBackup="false"
-        android:label="@string/app_name"
-        android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
-
-        <activity
-            android:name=".MainActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-
-        <service
-            android:name=".Tastiera45Service"
-            android:exported="true"
-            android:label="@string/ime_name"
-            android:permission="android.permission.BIND_INPUT_METHOD">
-            <intent-filter>
-                <action android:name="android.view.InputMethod" />
-            </intent-filter>
-            <meta-data
-                android:name="android.view.im"
-                android:resource="@xml/method" />
-        </service>
-
-        <service
-            android:name=".CursorAccessibilityService"
-            android:exported="true"
-            android:label="@string/cursor_service_name"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
-
-    </application>
-</manifest>
+<!-- Aggiungi dentro <application> -->
+<service
+    android:name=".FloatingOrbService"
+    android:exported="false" />
