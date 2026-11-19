@@ -36,7 +36,8 @@ class AngledKeyboardView(
         fun onSwitchIme()
         fun onMoveTextCursor(deltaXSteps: Int, deltaYSteps: Int)
         fun onSwipeWordDecoded(candidates: List<String>)
-        fun onDragFloatingKeyboard(deltaScreenX: Float, deltaScreenY: Float)
+        fun onTapCorrectionCandidates(candidates: List<String>)
+        fun onDragFloatingKeyboard(deltaScreenX: Float, deltaScreenY: Float, isFinished: Boolean)
     }
 
     data class KeyDef(
@@ -84,6 +85,7 @@ class AngledKeyboardView(
     private var isCapsLock = false
     private var isSymbolsMode = false
     private var actionType = "SEARCH"
+    private var langMode = "BILINGUAL"
 
     // Stato e animazione Modalità Incognito
     private var isIncognitoMode = false
@@ -167,11 +169,14 @@ class AngledKeyboardView(
     // Paint minimal Bianco e Nero + Animazione Incognito
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val spotShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
     private val gripArcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
+    }
+    private val gripDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
     }
     private val incognitoWavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -231,6 +236,21 @@ class AngledKeyboardView(
         swipeDecoder.learnWord(word, isIncognito)
     }
 
+    fun suggestTapCorrections(word: String): List<String> {
+        return swipeDecoder.correctWord(word)
+    }
+
+    fun setLanguageMode(mode: String) {
+        if (langMode != mode) {
+            langMode = mode
+            swipeDecoder.setLanguageMode(mode)
+            rebuildArcLayout()
+            invalidate()
+        } else {
+            swipeDecoder.setLanguageMode(mode)
+        }
+    }
+
     fun setIncognito(active: Boolean) {
         if (active && !isIncognitoMode) {
             incognitoBurstStartMs = SystemClock.uptimeMillis()
@@ -286,6 +306,12 @@ class AngledKeyboardView(
                 shifted.computeBounds(b, true)
                 targetRegion.op(b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt(), Region.Op.UNION)
             }
+            // Include anche un cerchio attorno al vertice dell'arco per rendere sempre afferrabile l'impugnatura
+            val d = resources.displayMetrics.density
+            val gripPad = (28f * d).toInt()
+            val gx = offsetX + arcCenterX.toInt()
+            val gy = offsetY + arcCenterY.toInt()
+            targetRegion.op(gx - gripPad, gy - gripPad, gx + gripPad, gy + gripPad, Region.Op.UNION)
         } catch (_: Throwable) {
         }
     }
@@ -375,6 +401,12 @@ class AngledKeyboardView(
         }
     }
 
+    private fun spaceLabel(): String = when (langMode.uppercase()) {
+        "IT" -> "IT"
+        "EN" -> "EN"
+        else -> "IT • EN"
+    }
+
     private fun getRows(): List<List<KeyDef>> {
         if (isSymbolsMode) {
             return listOf(
@@ -389,7 +421,7 @@ class AngledKeyboardView(
                 listOf(
                     KeyDef("ABC", "ABC", isSpecial = true, weight = 1.35f),
                     KeyDef("GLOBE", "", isSpecial = true, weight = 1.15f),
-                    KeyDef("SPACE", "Spazio", weight = 4.2f),
+                    KeyDef("SPACE", spaceLabel(), weight = 4.2f),
                     KeyDef(",", ","),
                     KeyDef("ENTER", "", isActionKey = true, weight = 1.35f)
                 )
@@ -419,7 +451,7 @@ class AngledKeyboardView(
             listOf(
                 KeyDef("SYM", "!#1", isSpecial = true, weight = 1.35f),
                 KeyDef("GLOBE", "", isSpecial = true, weight = 1.15f),
-                KeyDef("SPACE", "Spazio", weight = 4.2f),
+                KeyDef("SPACE", spaceLabel(), weight = 4.2f),
                 KeyDef(".", "."),
                 KeyDef("ENTER", "", isActionKey = true, weight = 1.35f)
             )
@@ -437,8 +469,8 @@ class AngledKeyboardView(
         val density = resources.displayMetrics.density
         val screenW = resources.displayMetrics.widthPixels.coerceAtLeast(320)
         val outerR = (screenW * scaleFactor * 0.96f).coerceAtLeast(200f * density)
-        val innerLimitR = (outerR * arcInnerRadiusPct).coerceIn(28f * density, outerR * 0.72f)
-        val gripR = (innerLimitR * 0.85f).coerceAtLeast(24f * density)
+        val innerLimitR = (outerR * arcInnerRadiusPct).coerceIn(32f * density, outerR * 0.72f)
+        val gripR = (innerLimitR * 0.88f).coerceAtLeast(28f * density)
 
         val sweep = (86f + tiltAngleDeg * 0.24f).coerceIn(64f, 90f)
         val halfSpare = ((90f - sweep) / 2f).coerceAtLeast(0f)
@@ -504,7 +536,6 @@ class AngledKeyboardView(
         arcCenterX = -m.bounds.left + pad
         arcCenterY = -m.bounds.top + pad + headroom
 
-        // Settore completo fino al vertice dell'arco: tutta l'impugnatura interna è 100% toccabile per trascinare su X e Y
         val outerOval = RectF(arcCenterX - arcOuterR, arcCenterY - arcOuterR, arcCenterX + arcOuterR, arcCenterY + arcOuterR)
         arcContourPath.moveTo(arcCenterX, arcCenterY)
         arcContourPath.arcTo(outerOval, arcFanStartDeg, arcFanSweepDeg, false)
@@ -590,7 +621,6 @@ class AngledKeyboardView(
         if (!isIncognitoMode || arcOuterR <= 10f) return
         val now = SystemClock.uptimeMillis()
 
-        // 1. Onda radar concentrica continua dal centro verso l'esterno dell'arco
         val cycleMs = 2200f
         val p1 = ((now % cycleMs.toLong()) / cycleMs)
         val p2 = (p1 + 0.5f) % 1.0f
@@ -609,7 +639,6 @@ class AngledKeyboardView(
             }
         }
 
-        // 2. Impulso luminoso extra nei primi 900ms all'attivazione
         val burstElapsed = now - incognitoBurstStartMs
         if (burstElapsed in 0..900L) {
             val bp = burstElapsed / 900f
@@ -621,7 +650,6 @@ class AngledKeyboardView(
             canvas.drawArc(oval, arcFanStartDeg, arcFanSweepDeg, false, incognitoWavePaint)
         }
 
-        // 3. Bagliore pulsante nella zona dell'impugnatura + micro-icona Incognito (occhiali)
         val pulse = 0.5f + 0.5f * sin((now / 360.0)).toFloat()
         val glowR = (arcInnerLimitR * 0.78f).coerceAtLeast(22f * density)
         incognitoFillWavePaint.color = Color.argb((22 + pulse * 34).toInt(), 255, 255, 255)
@@ -631,11 +659,10 @@ class AngledKeyboardView(
         canvas.restore()
 
         val bisectorRad = Math.toRadians((arcFanStartDeg + arcFanSweepDeg / 2f).toDouble())
-        val iconR = (arcGripR * 0.44f).coerceAtLeast(14f * density)
+        val iconR = (arcGripR * 0.42f).coerceAtLeast(14f * density)
         val ix = arcCenterX + (iconR * cos(bisectorRad)).toFloat()
         val iy = arcCenterY + (iconR * sin(bisectorRad)).toFloat()
 
-        // Icona minimal occhiali incognito
         val rLens = 3.2f * density
         val gap = 4.4f * density
         iconWhitePaint.style = Paint.Style.STROKE
@@ -671,7 +698,6 @@ class AngledKeyboardView(
             canvas.drawPath(arcContourPath, bgPaint)
         }
 
-        // Animazione onda Incognito sotto i tasti
         if (isIncognitoMode) {
             drawIncognitoAnimation(canvas, density)
         }
@@ -692,9 +718,9 @@ class AngledKeyboardView(
         }
 
         // Impugnatura curva minimal per trascinare la tastiera concentrica su X e Y
-        val gripArcRadius = (arcGripR * 0.72f).coerceAtLeast(18f * density)
+        val gripArcRadius = (arcGripR * 0.72f).coerceAtLeast(20f * density)
         val bisectorDeg = arcFanStartDeg + arcFanSweepDeg / 2f
-        val gripSweep = (arcFanSweepDeg * 0.42f).coerceIn(18f, 36f)
+        val gripSweep = (arcFanSweepDeg * 0.46f).coerceIn(22f, 40f)
         val gripOval = RectF(
             arcCenterX - gripArcRadius,
             arcCenterY - gripArcRadius,
@@ -704,10 +730,15 @@ class AngledKeyboardView(
         val gripRad = Math.toRadians(bisectorDeg.toDouble())
         val gx = arcCenterX + (gripArcRadius * cos(gripRad)).toFloat()
         val gy = arcCenterY + (gripArcRadius * sin(gripRad)).toFloat()
-        drawUnderShadow(canvas, gx, gy, 14f * density, density)
+        drawUnderShadow(canvas, gx, gy, 16f * density, density)
 
-        gripArcPaint.strokeWidth = (if (gestureMode == GestureMode.DRAG) 5.5f else 4.0f) * density
+        gripArcPaint.color = if (gestureMode == GestureMode.DRAG) Color.parseColor("#D0BCFF") else Color.WHITE
+        gripArcPaint.strokeWidth = (if (gestureMode == GestureMode.DRAG) 6.0f else 4.5f) * density
         canvas.drawArc(gripOval, bisectorDeg - gripSweep / 2f, gripSweep, false, gripArcPaint)
+
+        // Puntino centrale dell'impugnatura per indicare il trascinamento 2D (X + Y)
+        gripDotPaint.color = gripArcPaint.color
+        canvas.drawCircle(gx, gy, 2.6f * density, gripDotPaint)
 
         if (gestureMode == GestureMode.SWIPE && swipePoints.size > 1) {
             canvas.drawPath(swipeDrawPath, swipeTrailPaint)
@@ -796,7 +827,7 @@ class AngledKeyboardView(
             else -> {
                 val label = if (key.code == "SPACE" && gestureMode == GestureMode.SPACE_CURSOR) "◄ ▲ ▼ ►" else key.label
                 textPaint.textSize = when {
-                    key.code == "SPACE" -> (unit * 0.34f).coerceAtLeast(9.5f * density)
+                    key.code == "SPACE" -> (unit * 0.32f).coerceAtLeast(9.5f * density)
                     label.length >= 3 -> (unit * 0.32f).coerceAtLeast(9f * density)
                     else -> (unit * 0.48f).coerceAtLeast(12f * density)
                 }
@@ -821,7 +852,7 @@ class AngledKeyboardView(
     }
 
     // =========================================================================
-    // DECODIFICA SWIPE
+    // DECODIFICA SWIPE BILINGUE (IT + EN)
     // =========================================================================
 
     private fun decodeSwipe(): List<String> {
@@ -831,7 +862,7 @@ class AngledKeyboardView(
             letterCenters.values.filter { it !== p }.minOfOrNull { hypot(p.x - it.x, p.y - it.y) }
         }.average().toFloat().coerceAtLeast(14f)
 
-        val step = (keyStep * 0.25f).coerceAtLeast(4f)
+        val step = (keyStep * 0.24f).coerceAtLeast(4f)
         val dense = mutableListOf(swipePoints.first())
         for (i in 1 until swipePoints.size) {
             val a = swipePoints[i - 1]
@@ -847,21 +878,24 @@ class AngledKeyboardView(
     }
 
     // =========================================================================
-    // TOUCH, TRASCINAMENTO X/Y, SWIPE E CURSORE 2D
+    // TOUCH, TRASCINAMENTO X/Y AL VOLO, SWIPE E CURSORE 2D
     // =========================================================================
 
-    private fun isPointInArcSector(x: Float, y: Float, maxR: Float): Boolean {
+    private fun isPointInDragGrip(x: Float, y: Float): Boolean {
+        val density = resources.displayMetrics.density
         val dist = hypot(x - arcCenterX, y - arcCenterY)
-        if (dist > maxR) return false
+        // Anche un tocco vicino al vertice dell'impugnatura avvia il trascinamento 2D
+        if (dist <= 26f * density) return true
+        if (dist > arcInnerLimitR * 0.94f) return false
         var deg = Math.toDegrees(atan2((y - arcCenterY).toDouble(), (x - arcCenterX).toDouble())).toFloat()
         if (deg < 0f) deg += 360f
-        return isAngleInSweep(deg, arcFanStartDeg - 4f, arcFanSweepDeg + 8f)
+        return isAngleInSweep(deg, arcFanStartDeg - 8f, arcFanSweepDeg + 16f)
     }
 
     private fun findArcSector(x: Float, y: Float): ArcSector? {
         if (arcSectors.isEmpty() || arcOuterR <= arcInnerLimitR * 0.7f) return null
         val dist = hypot(x - arcCenterX, y - arcCenterY)
-        if (dist < arcInnerLimitR * 0.86f || dist > arcOuterR * 1.04f) return null
+        if (dist < arcInnerLimitR * 0.88f || dist > arcOuterR * 1.04f) return null
 
         var deg = Math.toDegrees(atan2((y - arcCenterY).toDouble(), (x - arcCenterX).toDouble())).toFloat()
         if (deg < 0f) deg += 360f
@@ -882,8 +916,23 @@ class AngledKeyboardView(
         val ly = event.y
 
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-            val inDragGrip = isPointInArcSector(lx, ly, arcInnerLimitR * 0.90f)
+            val inDragGrip = isPointInDragGrip(lx, ly)
             if (!inDragGrip && findArcSector(lx, ly) == null) return false
+        }
+
+        // Gesto a 2 dita in qualunque punto dell'arco -> attiva subito trascinamento 2D X/Y
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN && event.pointerCount >= 2) {
+            handler.removeCallbacks(longPressRunnable)
+            handler.removeCallbacks(repeatDelete)
+            activeKey = null
+            swipePoints.clear()
+            swipeDrawPath.reset()
+            gestureMode = GestureMode.DRAG
+            downRawX = event.rawX
+            downRawY = event.rawY
+            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            invalidate()
+            return true
         }
 
         when (event.actionMasked) {
@@ -896,7 +945,7 @@ class AngledKeyboardView(
                 swipePoints.clear()
                 swipeDrawPath.reset()
 
-                if (isPointInArcSector(lx, ly, arcInnerLimitR * 0.90f)) {
+                if (isPointInDragGrip(lx, ly)) {
                     gestureMode = GestureMode.DRAG
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     invalidate()
@@ -937,7 +986,7 @@ class AngledKeyboardView(
                         val dx = event.rawX - downRawX
                         val dy = event.rawY - downRawY
                         if (dx != 0f || dy != 0f) {
-                            listener.onDragFloatingKeyboard(dx, dy)
+                            listener.onDragFloatingKeyboard(dx, dy, isFinished = false)
                             downRawX = event.rawX
                             downRawY = event.rawY
                         }
@@ -990,6 +1039,9 @@ class AngledKeyboardView(
                 handler.removeCallbacks(repeatDelete)
 
                 when (gestureMode) {
+                    GestureMode.DRAG -> {
+                        listener.onDragFloatingKeyboard(0f, 0f, isFinished = true)
+                    }
                     GestureMode.CHAR_POPUP -> {
                         val chosen = charPopupOptions.getOrNull(charPopupSelectedIdx)
                         if (!chosen.isNullOrEmpty()) {
