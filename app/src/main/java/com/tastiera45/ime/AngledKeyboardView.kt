@@ -17,6 +17,7 @@ import android.os.Looper
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -707,7 +708,6 @@ class AngledKeyboardView(
             canvas.drawPath(arcContourPath, bgPaint)
         }
 
-        // Nessun limite massimo artificiale di 34dp: permette lettere molto grandi!
         val unit = (((arcOuterR - arcInnerLimitR) / 4f) * letterSizeScale).coerceAtLeast(10f * density)
         subTextPaint.textSize = (unit * 0.24f).coerceAtLeast(7f * density)
 
