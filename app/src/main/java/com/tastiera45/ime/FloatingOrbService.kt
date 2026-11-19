@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
@@ -30,6 +31,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.hypot
+import kotlin.math.sin
 
 class FloatingOrbService : Service() {
 
@@ -48,8 +50,7 @@ class FloatingOrbService : Service() {
     private var swipeContainer: LinearLayout? = null
     private var swipeParams: WindowManager.LayoutParams? = null
 
-    private var cursorPuckView: RemoteCursorOverlay.CursorPuckView? = null
-    private var cursorPuckParams: WindowManager.LayoutParams? = null
+    private var cursorController: RemoteCursorOverlay.GlobalCursorController? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -102,7 +103,8 @@ class FloatingOrbService : Service() {
         try { prefs.unregisterOnSharedPreferenceChangeListener(prefListener) } catch (_: Throwable) {}
         removeMenuWindow()
         removeSwipeWindow()
-        removeCursorPuck()
+        cursorController?.dismiss()
+        cursorController = null
         try { if (::orbView.isInitialized) wm.removeView(orbView) } catch (_: Throwable) {}
         super.onDestroy()
     }
@@ -170,13 +172,15 @@ class FloatingOrbService : Service() {
         private var downRawY = 0f
         private var startX = 0
         private var startY = 0
-        private var held = false
-        private var dragged = false
+        private var quickSelectActive = false
+        private var draggingOrb = false
 
         private val holdTask = Runnable {
-            held = true
-            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            openMenu()
+            if (!draggingOrb) {
+                quickSelectActive = true
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                openMenu()
+            }
         }
 
         private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#EE08080A") }
@@ -188,16 +192,26 @@ class FloatingOrbService : Service() {
             val r = (minOf(width, height) / 2f) - 2f
             if (r <= 0f) return
             val incog = OrbBridge.activeIme?.isIncognito() == true
+            val pulse = if (incog) (0.5f + 0.5f * sin(SystemClock.uptimeMillis() / 320.0)).toFloat() else 0f
+
             border.color = when {
-                isEditingMenu -> Color.parseColor("#D0BCFF")
-                incog -> Color.WHITE
+                draggingOrb || isEditingMenu -> Color.parseColor("#D0BCFF")
+                incog -> Color.argb((170 + pulse * 85).toInt(), 255, 255, 255)
                 else -> Color.parseColor("#606068")
             }
-            border.strokeWidth = if (incog || isEditingMenu) 3.2f else 2.0f
+            border.strokeWidth = when {
+                incog -> 2.6f + pulse * 1.6f
+                draggingOrb || isEditingMenu -> 3.2f
+                else -> 2.0f
+            }
             canvas.drawCircle(cx, cy, r, bg)
             canvas.drawCircle(cx, cy, r, border)
             text.textSize = r * 0.85f
             canvas.drawText("✦", cx, cy - (text.descent() + text.ascent()) / 2f, text)
+
+            if (incog) {
+                postInvalidateOnAnimation()
+            }
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -206,12 +220,20 @@ class FloatingOrbService : Service() {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX; downRawY = event.rawY
                     startX = orbParams.x; startY = orbParams.y
-                    held = false; dragged = false
+                    quickSelectActive = false
+                    draggingOrb = false
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    if (!isEditingMenu) handler.postDelayed(holdTask, 150L)
+                    handler.postDelayed(holdTask, 260L)
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (isEditingMenu) {
+                    if (!draggingOrb && !quickSelectActive &&
+                        hypot(event.rawX - downRawX, event.rawY - downRawY) > 8f * density
+                    ) {
+                        draggingOrb = true
+                        handler.removeCallbacks(holdTask)
+                        invalidate()
+                    }
+                    if (draggingOrb) {
                         val sw = resources.displayMetrics.widthPixels.coerceAtLeast(320)
                         val sh = resources.displayMetrics.heightPixels.coerceAtLeast(320)
                         val maxL = (sw - orbParams.width).coerceAtLeast(1)
@@ -220,18 +242,15 @@ class FloatingOrbService : Service() {
                         orbParams.y = (startY - (event.rawY - downRawY).toInt()).coerceIn(0, maxB)
                         try { wm.updateViewLayout(orbView, orbParams) } catch (_: Throwable) {}
                         updatePopupPositions()
-                        return true
+                    } else if (quickSelectActive) {
+                        updateHover(event.rawX, event.rawY)
                     }
-                    if (!dragged && hypot(event.rawX - downRawX, event.rawY - downRawY) > 8f * density) {
-                        dragged = true
-                        handler.removeCallbacks(holdTask)
-                        openMenu()
-                    }
-                    if (dragged || held) updateHover(event.rawX, event.rawY)
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     handler.removeCallbacks(holdTask)
-                    if (isEditingMenu) {
+                    if (draggingOrb) {
+                        draggingOrb = false
+                        invalidate()
                         val sw = resources.displayMetrics.widthPixels.coerceAtLeast(320)
                         val maxL = (sw - orbParams.width).coerceAtLeast(1)
                         prefs.edit()
@@ -240,7 +259,8 @@ class FloatingOrbService : Service() {
                             .apply()
                         return true
                     }
-                    if (dragged || held) {
+                    if (quickSelectActive) {
+                        quickSelectActive = false
                         updateHover(event.rawX, event.rawY)
                         val chosen = hoveredId
                         removeMenuWindow()
@@ -315,9 +335,8 @@ class FloatingOrbService : Service() {
         val entries = MenuPrefs.getEntries(
             p = prefs,
             isKbVisible = ime?.isKeyboardShown() ?: false,
-            isArcMode = MenuPrefs.getBool(prefs, "kb_arc_mode", true),
             isListening = false,
-            isMouseOpen = cursorPuckView != null,
+            isMouseOpen = cursorController != null,
             isIncognito = ime?.isIncognito() ?: false
         )
 
@@ -326,7 +345,7 @@ class FloatingOrbService : Service() {
             setPadding((8 * density).toInt(), (3 * density).toInt(), (4 * density).toInt(), (5 * density).toInt())
         }
         header.addView(TextView(this).apply {
-            text = if (isEditingMenu) "Modifica / Sposta ✦" else "Menu ✦"
+            text = if (isEditingMenu) "Modifica Menu ✦" else "Menu ✦"
             textSize = 11f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#8E8E93"))
         }, LinearLayout.LayoutParams(0, -2, 1f))
 
@@ -476,14 +495,16 @@ class FloatingOrbService : Service() {
                     @Suppress("DEPRECATION")
                     try { imm?.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0) } catch (_: Throwable) {}
                 } else {
-                    MenuPrefs.openSystemImePicker(this)
+                    MenuPrefs.switchToImeOrPicker(this, { it == packageName })
                 }
             }
             "LAUNCH_KB_SAMSUNG" -> {
                 if (ime != null) {
                     ime.switchToSamsungKeyboard()
                 } else {
-                    MenuPrefs.openSystemImePicker(this)
+                    MenuPrefs.switchToImeOrPicker(this, {
+                        it.contains("honeyboard", ignoreCase = true) || it.contains("samsung", ignoreCase = true)
+                    })
                 }
             }
             "TOGGLE_KB" -> {
@@ -494,20 +515,19 @@ class FloatingOrbService : Service() {
                     try { imm?.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0) } catch (_: Throwable) {}
                 }
             }
-            "SWITCH_STYLE" -> {
-                val nextArc = !MenuPrefs.getBool(prefs, "kb_arc_mode", true)
-                prefs.edit().putBoolean("kb_arc_mode", nextArc).apply()
-                if (ime != null) {
-                    ime.setKeyboard45Visible(true)
-                } else {
-                    MenuPrefs.openSystemImePicker(this)
-                }
-            }
             "VOICE" -> {
                 if (ime != null) {
                     ime.switchToNotuneVoice()
                 } else {
-                    MenuPrefs.openSystemImePicker(this)
+                    MenuPrefs.switchToImeOrPicker(
+                        this,
+                        {
+                            it == MenuPrefs.NOTUNE_PKG ||
+                                it.contains("notune", ignoreCase = true) ||
+                                it.contains("transcribe", ignoreCase = true)
+                        },
+                        preferCompactSubtype = true
+                    )
                 }
             }
             "MOUSE" -> toggleGlobalCursor()
@@ -527,7 +547,13 @@ class FloatingOrbService : Service() {
                     try { startActivity(Intent.createChooser(intent, "Traduci").apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }) } catch (_: Throwable) {}
                 }
             }
-            "INCOGNITO" -> ime?.toggleManualIncognito()
+            "INCOGNITO" -> {
+                if (ime != null) {
+                    ime.toggleManualIncognito()
+                } else {
+                    Toast.makeText(this, "Attiva prima Tastiera 45° per la modalità Incognito", Toast.LENGTH_SHORT).show()
+                }
+            }
             "SETTINGS" -> try {
                 startActivity(Intent(this, MainActivity::class.java).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
             } catch (_: Throwable) {}
@@ -608,47 +634,30 @@ class FloatingOrbService : Service() {
         swipeParams = null
     }
 
-    // --- Pallino Cursore Semplice (Trascina + Tap) ---
+    // --- Puntatore Tondo Minimal + Pad Guida (Tap = Click Sinistro, Doppio Tap = Click Destro) ---
 
     private fun toggleGlobalCursor() {
-        if (cursorPuckView != null) {
-            removeCursorPuck()
+        val existing = cursorController
+        if (existing != null) {
+            existing.dismiss()
+            cursorController = null
             return
         }
-        val sw = resources.displayMetrics.widthPixels.coerceAtLeast(320)
-        val sh = resources.displayMetrics.heightPixels.coerceAtLeast(320)
-        val puck = RemoteCursorOverlay.CursorPuckView(this)
-        val size = puck.desiredSizePx()
-        val params = WindowManager.LayoutParams(
-            size, size,
-            overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = (sw * 0.45f).toInt().coerceIn(0, (sw - size).coerceAtLeast(0))
-            y = (sh * 0.45f).toInt().coerceIn(0, (sh - size).coerceAtLeast(0))
-        }
-
-        puck.onDragDelta = { dx, dy ->
-            params.x = (params.x + dx).coerceIn(0, (sw - size).coerceAtLeast(0))
-            params.y = (params.y + dy).coerceIn(0, (sh - size).coerceAtLeast(0))
-            try { wm.updateViewLayout(puck, params) } catch (_: Throwable) {}
-        }
-        puck.onCloseRequested = { removeCursorPuck() }
-        puck.onAccessibilityMissing = {
-            Toast.makeText(this, "Attiva 'Tastiera 45° - Remote Cursor' in Accessibilità", Toast.LENGTH_LONG).show()
-            try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }) } catch (_: Throwable) {}
-        }
-
-        wm.addView(puck, params)
-        cursorPuckView = puck
-        cursorPuckParams = params
-    }
-
-    private fun removeCursorPuck() {
-        cursorPuckView?.let { try { wm.removeView(it) } catch (_: Throwable) {} }
-        cursorPuckView = null
-        cursorPuckParams = null
+        val ctrl = RemoteCursorOverlay.GlobalCursorController(
+            context = this,
+            wm = wm,
+            windowType = overlayWindowType(),
+            onClose = {
+                cursorController = null
+            },
+            onAccessibilityMissing = {
+                Toast.makeText(this, "Attiva 'Tastiera 45° - Remote Cursor' in Accessibilità", Toast.LENGTH_LONG).show()
+                try {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                } catch (_: Throwable) {}
+            }
+        )
+        ctrl.show()
+        cursorController = ctrl
     }
 }
