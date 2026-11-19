@@ -2,8 +2,6 @@ package com.tastiera45.ime
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlertDialog
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -14,500 +12,502 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import android.speech.RecognitionService
-import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var overlayPermBtn: Button
-    private lateinit var menuConfigList: LinearLayout
-    private lateinit var shortcutsList: LinearLayout
-    private val voiceValues = mutableListOf<String>()
-    private val voiceLabels = mutableListOf<String>()
+    private lateinit var mainColumn: LinearLayout
+    private lateinit var slidersContainer: LinearLayout
+    private lateinit var shortcutsContainer: LinearLayout
+
+    private lateinit var btnArcMode: TextView
+    private lateinit var btnPopupMode: TextView
+    private lateinit var btnArcRight: TextView
+    private lateinit var btnArcLeft: TextView
+    private lateinit var arcOnlyGroup: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        try {
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 101)
-            }
-        } catch (_: Throwable) {}
-
-        val density = resources.displayMetrics.density
         prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
-
-        if (Settings.canDrawOverlays(this)) {
-            try { startService(Intent(this, FloatingOrbService::class.java)) } catch (_: Throwable) {}
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 101)
         }
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding((20 * density).toInt(), (32 * density).toInt(), (20 * density).toInt(), (32 * density).toInt())
-        }
-
-        container.addView(TextView(this).apply {
-            text = "Tastiera Minimal & Arco"
-            textSize = 24f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
-        })
-        container.addView(TextView(this).apply {
-            text = "Pulsante magico ✦ sempre attivo su ogni schermata, dettatura Notune Transcribe e tastiera concentrica regolabile."
-            textSize = 13.5f; setTextColor(Color.parseColor("#8E8E93"))
-            setPadding(0, (6 * density).toInt(), 0, (18 * density).toInt())
-        })
-
-        container.addView(actionBtn("1. Attiva Tastiera nelle Impostazioni", "#FFFFFF", "#000000") {
-            try { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) } catch (_: Throwable) {}
-        })
-        container.addView(actionBtn("2. Seleziona come tastiera attiva") {
-            try { (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker() } catch (_: Throwable) {}
-        })
-        container.addView(actionBtn("3. Attiva permesso Remote Cursor (Mouse)") {
-            Toast.makeText(this, "Trova 'Tastiera 45° - Remote Cursor' e attivalo", Toast.LENGTH_LONG).show()
-            try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (_: Throwable) {}
-        })
-
-        overlayPermBtn = actionBtn("") {
-            if (Settings.canDrawOverlays(this)) {
-                try { startService(Intent(this, FloatingOrbService::class.java)) } catch (_: Throwable) {}
-                Toast.makeText(this, "Tasto Magico ✦ attivo su tutte le schermate!", Toast.LENGTH_SHORT).show()
-            } else {
-                try {
-                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-                } catch (_: Throwable) {}
-            }
-        }
-        container.addView(overlayPermBtn)
-
-        // =========================================================================
-        // GENERALE & AVVIO
-        // =========================================================================
-        container.addView(groupTitle("GENERALE & AVVIO"))
-
-        val styleBtn = actionBtn("") {}
-        fun updateStyleBtn() {
-            val arc = MenuPrefs.getBool(prefs, "kb_arc_mode", true)
-            styleBtn.text = if (arc) "Layout attivo: AD ARCO CONCENTRICO" else "Layout attivo: POP-UP SCOLPITO"
-        }
-        updateStyleBtn()
-        styleBtn.setOnClickListener {
-            prefs.edit().putBoolean("kb_arc_mode", !MenuPrefs.getBool(prefs, "kb_arc_mode", true)).apply()
-            updateStyleBtn()
-        }
-        container.addView(styleBtn)
-
-        val startBtn = actionBtn("") {}
-        fun updateStartBtn() {
-            val orbOnly = MenuPrefs.getBool(prefs, "orb_only_start", false)
-            startBtn.text = if (orbOnly) "Avvio campo testo: SOLO TASTO MAGICO ✦" else "Avvio campo testo: TASTIERA + TASTO ✦"
-        }
-        updateStartBtn()
-        startBtn.setOnClickListener {
-            prefs.edit().putBoolean("orb_only_start", !MenuPrefs.getBool(prefs, "orb_only_start", false)).apply()
-            updateStartBtn()
-        }
-        container.addView(startBtn)
-
-        // =========================================================================
-        // SEZIONE 1: TASTIERA AD ARCO CONCENTRICO
-        // =========================================================================
-        container.addView(divider(density))
-        container.addView(groupTitle("SEZIONE 1 — TASTIERA AD ARCO CONCENTRICO"))
-
-        val cornerBtn = actionBtn("") {}
-        fun updateCornerBtn() {
-            val left = MenuPrefs.getBool(prefs, "arc_left_side", MenuPrefs.getBool(prefs, "kb_arc_left", false))
-            cornerBtn.text = if (left) "Angolo arco: SINISTRO" else "Angolo arco: DESTRO"
-        }
-        updateCornerBtn()
-        cornerBtn.setOnClickListener {
-            val nextLeft = !MenuPrefs.getBool(prefs, "arc_left_side", MenuPrefs.getBool(prefs, "kb_arc_left", false))
-            prefs.edit()
-                .putBoolean("arc_left_side", nextLeft)
-                .putFloat("arc_x_pct", if (nextLeft) 0.0f else 1.0f)
-                .apply()
-            updateCornerBtn()
-        }
-        container.addView(cornerBtn)
-
-        addStyleSliders(container, "arc_", defaultX = 1.0f, defaultScale = 0.86f, tiltTitle = "Apertura / angolo arco", isArcSection = true, density = density)
-
-        // =========================================================================
-        // SEZIONE 2: TASTIERA POP-UP SCOLPITO
-        // =========================================================================
-        container.addView(divider(density))
-        container.addView(groupTitle("SEZIONE 2 — TASTIERA POP-UP SCOLPITO"))
-
-        addStyleSliders(container, "popup_", defaultX = 0.50f, defaultScale = 0.82f, tiltTitle = "Inclinazione pop-up", isArcSection = false, density = density)
-
-        // =========================================================================
-        // SEZIONE 3: PULSANTE MAGICO (✦) — POSIZIONE, TASTI E ORDINE
-        // =========================================================================
-        container.addView(divider(density))
-        container.addView(groupTitle("SEZIONE 3 — PULSANTE MAGICO (✦): POSIZIONE, TASTI E ORDINE"))
-
-        addSlider(container, "Posizione orizzontale tasto ✦", 0, 100, (MenuPrefs.getFloat(prefs, "orb_x_pct", 0.96f) * 100).toInt(), "%") {
-            prefs.edit().putFloat("orb_x_pct", it / 100f).apply()
-        }
-        addSlider(container, "Altezza dal basso tasto ✦", 0, 750, (MenuPrefs.getInt(prefs, "orb_bottom_offset", (36 * density).toInt()) / density).toInt(), "dp") {
-            prefs.edit().putInt("orb_bottom_offset", (it * density).toInt()).apply()
-        }
-
-        container.addView(label("Attiva/Disattiva (☑/☐) e riordina (▲/▼) le opzioni del menu ✦ (anche dal tasto '✎ Edit' nel menu):"))
-        menuConfigList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        container.addView(menuConfigList)
-        refreshMenuConfig()
-
-        // =========================================================================
-        // SEZIONE 4: AGGIUNGI SCORCIATOIE AL MENU ✦
-        // =========================================================================
-        container.addView(divider(density))
-        container.addView(groupTitle("SEZIONE 4 — AGGIUNGI SCORCIATOIE AL MENU ✦"))
-
-        container.addView(actionBtn("+ Assistente di Scrittura Samsung") {
-            addShortcut("SAMSUNG_ASSIST", "Assistente Samsung", "samsung_writing_assist")
-        })
-        container.addView(actionBtn("+ Scegli da Shortcut Maker / Scorciatoie") {
-            try {
-                @Suppress("DEPRECATION")
-                startActivityForResult(Intent.createChooser(Intent(Intent.ACTION_CREATE_SHORTCUT), "Scegli scorciatoia"), 202)
-            } catch (_: Throwable) { Toast.makeText(this, "Nessuna app di scorciatoie trovata", Toast.LENGTH_SHORT).show() }
-        })
-        container.addView(actionBtn("+ Scegli un'App da avviare") { showAppsDialog() })
-
-        val nameIn = inputBox("Nome testo rapido (es. Email)", density)
-        val textIn = inputBox("Testo da inserire (es. mario@gmail.com)", density)
-        container.addView(nameIn)
-        container.addView(textIn)
-        container.addView(actionBtn("+ Aggiungi testo rapido al menu ✦", "#1C1C20") {
-            val l = nameIn.text.toString().trim()
-            val t = textIn.text.toString()
-            if (l.isEmpty() || t.isEmpty()) {
-                Toast.makeText(this, "Inserisci nome e testo", Toast.LENGTH_SHORT).show()
-            } else {
-                addShortcut("TEXT", l, t)
-                nameIn.setText(""); textIn.setText("")
-            }
-        })
-
-        shortcutsList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        container.addView(shortcutsList)
-        refreshShortcuts()
-
-        // =========================================================================
-        // SEZIONE 5: DETTATURA VOCALE (Notune Transcribe + altri motori)
-        // =========================================================================
-        container.addView(divider(density))
-        container.addView(groupTitle("DETTATURA VOCALE (NOTUNE TRANSCRIBE)"))
-
-        populateVoiceEngines()
-        val spinner = Spinner(this).apply { setBackgroundColor(Color.parseColor("#141417")) }
-        spinner.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, voiceLabels) {
-            override fun getView(pos: Int, v: View?, p: ViewGroup) = (super.getView(pos, v, p) as TextView).apply {
-                setTextColor(Color.WHITE); setPadding((12 * density).toInt(), (14 * density).toInt(), (12 * density).toInt(), (14 * density).toInt())
-            }
-            override fun getDropDownView(pos: Int, v: View?, p: ViewGroup) = (super.getDropDownView(pos, v, p) as TextView).apply {
-                setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#141417"))
-                setPadding((14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt())
-            }
-        }
-        val defaultVoice = if (MenuPrefs.isPackageInstalled(this, MenuPrefs.NOTUNE_PKG)) MenuPrefs.NOTUNE_PREF_KEY else ""
-        val savedVoice = MenuPrefs.getString(prefs, "voice_service_component", defaultVoice) ?: defaultVoice
-        spinner.setSelection(voiceValues.indexOf(savedVoice).coerceAtLeast(0))
-        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                prefs.edit().putString("voice_service_component", voiceValues.getOrNull(pos) ?: "").apply()
-            }
-            override fun onNothingSelected(p: AdapterView<*>?) {}
-        }
-        container.addView(spinner)
-
-        container.addView(inputBox("Tocca qui per provare l'arco, lo swipe, il cursore 2D e il menu ✦...", density).apply {
-            (layoutParams as LinearLayout.LayoutParams).topMargin = (20 * density).toInt()
-        })
-
-        setContentView(ScrollView(this).apply { setBackgroundColor(Color.BLACK); addView(container) })
+        buildUi()
     }
 
     override fun onResume() {
         super.onResume()
-        val canDraw = Settings.canDrawOverlays(this)
-        if (::overlayPermBtn.isInitialized) {
-            overlayPermBtn.text = if (canDraw) "4. ✓ Tasto Magico ✦ attivo su ogni schermata" else "4. Attiva Tasto Magico ✦ su ogni schermata (Sovrapponi app)"
-        }
-        if (canDraw) {
+        refreshModeButtons()
+        rebuildSliders()
+        rebuildShortcutsList()
+        if (Settings.canDrawOverlays(this)) {
             try { startService(Intent(this, FloatingOrbService::class.java)) } catch (_: Throwable) {}
         }
-        if (::menuConfigList.isInitialized) refreshMenuConfig()
-        if (::shortcutsList.isInitialized) refreshShortcuts()
     }
 
-    private fun populateVoiceEngines() {
-        voiceValues.clear()
-        voiceLabels.clear()
+    private fun buildUi() {
+        val d = resources.displayMetrics.density
+        val pad = (16 * d).toInt()
 
-        // 1. Notune Transcribe (dev.notune.transcribe) sempre disponibile in cima
-        val notuneInstalled = MenuPrefs.isPackageInstalled(this, MenuPrefs.NOTUNE_PKG)
-        voiceValues.add(MenuPrefs.NOTUNE_PREF_KEY)
-        voiceLabels.add(
-            if (notuneInstalled) "Notune Transcribe (dev.notune.transcribe) — Consigliato"
-            else "Notune Transcribe (dev.notune.transcribe) [Non installata]"
-        )
+        val rootScroll = ScrollView(this).apply {
+            setBackgroundColor(Color.parseColor("#09090B"))
+            isFillViewport = true
+        }
 
-        // 2. Tutte le tastiere vocali (IME) installate sul dispositivo
-        try {
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            imm?.inputMethodList?.forEach { imi ->
-                if (imi.packageName != packageName && imi.packageName != MenuPrefs.NOTUNE_PKG) {
-                    voiceValues.add("IME_ID:${imi.id}")
-                    voiceLabels.add("[Tastiera / Voce] ${imi.loadLabel(packageManager)} (${imi.packageName})")
-                }
+        mainColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, (24 * d).toInt(), pad, (36 * d).toInt())
+        }
+
+        // Titolo
+        mainColumn.addView(TextView(this).apply {
+            text = "Tastiera 45°"
+            textSize = 24f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+        })
+        mainColumn.addView(TextView(this).apply {
+            text = "Tastiera concentrica ad arco, pop-up flottante, swipe ad alta precisione e cursore rapido."
+            textSize = 13f
+            setTextColor(Color.parseColor("#A1A1AA"))
+            setPadding(0, (4 * d).toInt(), 0, (16 * d).toInt())
+        })
+
+        // 1. SEZIONE ATTIVAZIONE E PERMESSI
+        val setupCard = createCard(d)
+        addSectionTitle(setupCard, "1. Attivazione e Permessi", d)
+
+        setupCard.addView(createActionButton("Abilita Tastiera 45° nelle Impostazioni", primary = true, d = d) {
+            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+        }, marginBottom(8, d))
+
+        setupCard.addView(createActionButton("Seleziona Tastiera 45° come predefinita", primary = false, d = d) {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)?.showInputMethodPicker()
+        }, marginBottom(8, d))
+
+        setupCard.addView(createActionButton("Attiva Tasto Magico Flottante ✦ (Overlay)", primary = false, d = d) {
+            if (!Settings.canDrawOverlays(this)) {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
+                )
+            } else {
+                startService(Intent(this, FloatingOrbService::class.java))
+                Toast.makeText(this, "Tasto Magico ✦ attivo", Toast.LENGTH_SHORT).show()
             }
-        } catch (_: Throwable) {}
+        }, marginBottom(8, d))
 
-        // 3. Servizi di riconoscimento vocale Android standard
-        try {
-            packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0).forEach { ri ->
-                ri.serviceInfo?.let { si ->
-                    val flat = ComponentName(si.packageName, si.name).flattenToString()
-                    voiceValues.add(flat)
-                    voiceLabels.add("[Servizio Vocale] ${ri.loadLabel(packageManager)} (${si.packageName})")
-                }
+        setupCard.addView(createActionButton("Attiva Permesso Accessibilità (Cursore Mouse)", primary = false, d = d) {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        })
+
+        mainColumn.addView(setupCard, marginBottom(14, d))
+
+        // 2. AREA DI PROVA IMMEDIATA
+        val testCard = createCard(d)
+        addSectionTitle(testCard, "2. Area di Prova Rapida", d)
+        val testInput = EditText(this).apply {
+            hint = "Tocca qui per provare tastiera, swipe e pressioni lunghe..."
+            setHintTextColor(Color.parseColor("#71717A"))
+            setTextColor(Color.WHITE)
+            textSize = 15f
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#18181B"))
+                cornerRadius = 10f * d
+                setStroke((1f * d).toInt(), Color.parseColor("#3F3F46"))
             }
-        } catch (_: Throwable) {}
+            setPadding((12 * d).toInt(), (12 * d).toInt(), (12 * d).toInt(), (12 * d).toInt())
+        }
+        testCard.addView(testInput)
+        mainColumn.addView(testCard, marginBottom(14, d))
 
-        voiceValues.add("")
-        voiceLabels.add("Predefinito di sistema (Automatico)")
+        // 3. LAYOUT E STILE TASTIERA
+        val styleCard = createCard(d)
+        addSectionTitle(styleCard, "3. Layout e Aspetto", d)
+
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btnArcMode = createSegmentButton("Arco Concentrico", d) {
+            prefs.edit().putBoolean("kb_arc_mode", true).apply()
+            refreshModeButtons()
+            rebuildSliders()
+        }
+        btnPopupMode = createSegmentButton("Pop-up Flottante", d) {
+            prefs.edit().putBoolean("kb_arc_mode", false).apply()
+            refreshModeButtons()
+            rebuildSliders()
+        }
+        modeRow.addView(btnArcMode, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = (6 * d).toInt() })
+        modeRow.addView(btnPopupMode, LinearLayout.LayoutParams(0, -2, 1f))
+        styleCard.addView(modeRow, marginBottom(10, d))
+
+        arcOnlyGroup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val sideRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btnArcRight = createSegmentButton("Arco a Destra", d) {
+            prefs.edit().putBoolean("kb_arc_left", false).putFloat("kb_x_pct", 1.0f).apply()
+            refreshModeButtons()
+        }
+        btnArcLeft = createSegmentButton("Arco a Sinistra", d) {
+            prefs.edit().putBoolean("kb_arc_left", true).putFloat("kb_x_pct", 0.0f).apply()
+            refreshModeButtons()
+        }
+        sideRow.addView(btnArcRight, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = (6 * d).toInt() })
+        sideRow.addView(btnArcLeft, LinearLayout.LayoutParams(0, -2, 1f))
+        arcOnlyGroup.addView(sideRow, marginBottom(10, d))
+        styleCard.addView(arcOnlyGroup)
+
+        slidersContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        styleCard.addView(slidersContainer)
+
+        styleCard.addView(createActionButton("Ripristina valori predefiniti stile", primary = false, d = d) {
+            val isArc = MenuPrefs.getBool(prefs, "kb_arc_mode", true)
+            val p = if (isArc) "arc_" else "pop_"
+            prefs.edit()
+                .putFloat("${p}scale", if (isArc) 0.86f else 0.88f)
+                .putFloat("${p}letter_size", 1.0f)
+                .putFloat("${p}opacity", 0.0f)
+                .putFloat("${p}tilt", 0f)
+                .putFloat("arc_rotation", 0f)
+                .putFloat("arc_inner_radius", 0.34f)
+                .putFloat("arc_row_spacing", 0.35f)
+                .putFloat("${p}key_spacing", 0.25f)
+                .putFloat("${p}shadow_strength", 0.92f)
+                .putFloat("${p}shadow_blur", 7.0f)
+                .apply()
+            rebuildSliders()
+            Toast.makeText(this, "Stile ripristinato", Toast.LENGTH_SHORT).show()
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (8 * d).toInt() })
+
+        mainColumn.addView(styleCard, marginBottom(14, d))
+
+        // 4. SCORCIATOIE RAPIDE NEL MENU ✦
+        val shortcutCard = createCard(d)
+        addSectionTitle(shortcutCard, "4. Scorciatoie Testo nel Tasto Magico ✦", d)
+
+        val labelInput = EditText(this).apply {
+            hint = "Nome (es. Email)"
+            setHintTextColor(Color.parseColor("#71717A"))
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#18181B"))
+                cornerRadius = 8f * d
+                setStroke((1f * d).toInt(), Color.parseColor("#3F3F46"))
+            }
+            setPadding((10 * d).toInt(), (9 * d).toInt(), (10 * d).toInt(), (9 * d).toInt())
+        }
+        val textInput = EditText(this).apply {
+            hint = "Testo da incollare (es. nome@esempio.it)"
+            setHintTextColor(Color.parseColor("#71717A"))
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#18181B"))
+                cornerRadius = 8f * d
+                setStroke((1f * d).toInt(), Color.parseColor("#3F3F46"))
+            }
+            setPadding((10 * d).toInt(), (9 * d).toInt(), (10 * d).toInt(), (9 * d).toInt())
+        }
+
+        shortcutCard.addView(labelInput, marginBottom(6, d))
+        shortcutCard.addView(textInput, marginBottom(8, d))
+        shortcutCard.addView(createActionButton("+ Aggiungi Scorciatoia", primary = false, d = d) {
+            val lbl = labelInput.text.toString().trim()
+            val txt = textInput.text.toString().trim()
+            if (lbl.isEmpty() || txt.isEmpty()) {
+                Toast.makeText(this, "Inserisci sia il nome che il testo", Toast.LENGTH_SHORT).show()
+                return@createActionButton
+            }
+            MenuPrefs.addTextShortcut(prefs, lbl, txt)
+            labelInput.setText("")
+            textInput.setText("")
+            rebuildShortcutsList()
+            Toast.makeText(this, "Scorciatoia '$lbl' aggiunta al menu ✦", Toast.LENGTH_SHORT).show()
+        }, marginBottom(8, d))
+
+        shortcutsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        shortcutCard.addView(shortcutsContainer)
+        mainColumn.addView(shortcutCard)
+
+        rootScroll.addView(mainColumn)
+        setContentView(rootScroll)
+
+        refreshModeButtons()
+        rebuildSliders()
+        rebuildShortcutsList()
     }
 
-    private fun addStyleSliders(
-        container: LinearLayout,
-        p: String,
-        defaultX: Float,
-        defaultScale: Float,
-        tiltTitle: String,
-        isArcSection: Boolean,
-        density: Float
-    ) {
-        addSlider(container, "Posizione orizzontale", 0, 100, (MenuPrefs.getFloat(prefs, "${p}x_pct", defaultX) * 100).toInt(), "%") {
-            prefs.edit().putFloat("${p}x_pct", it / 100f).apply()
-        }
-        addSlider(container, "Altezza dal basso", 0, 750, (MenuPrefs.getInt(prefs, "${p}bottom_offset", (36 * density).toInt()) / density).toInt(), "dp") {
-            prefs.edit().putInt("${p}bottom_offset", (it * density).toInt()).apply()
-        }
-        addSlider(container, "Dimensione generale", 50, 98, (MenuPrefs.getFloat(prefs, "${p}scale", defaultScale) * 100).toInt(), "%") {
+    private fun refreshModeButtons() {
+        val isArc = MenuPrefs.getBool(prefs, "kb_arc_mode", true)
+        val isLeft = MenuPrefs.getBool(prefs, "kb_arc_left", false)
+        styleSegmentButton(btnArcMode, isArc)
+        styleSegmentButton(btnPopupMode, !isArc)
+        arcOnlyGroup.visibility = if (isArc) View.VISIBLE else View.GONE
+        styleSegmentButton(btnArcRight, !isLeft)
+        styleSegmentButton(btnArcLeft, isLeft)
+    }
+
+    private fun rebuildSliders() {
+        slidersContainer.removeAllViews()
+        val isArc = MenuPrefs.getBool(prefs, "kb_arc_mode", true)
+        val p = if (isArc) "arc_" else "pop_"
+
+        addSlider(
+            slidersContainer,
+            "Dimensione tastiera",
+            50, 98,
+            (MenuPrefs.getFloat(prefs, "${p}scale", if (isArc) 0.86f else 0.88f) * 100).toInt(),
+            "%"
+        ) {
             prefs.edit().putFloat("${p}scale", it / 100f).apply()
         }
-        addSlider(container, tiltTitle, -90, 90, MenuPrefs.getFloat(prefs, "${p}tilt", 0f).toInt(), "°") {
+
+        addSlider(
+            slidersContainer,
+            "Grandezza delle lettere",
+            50, 300,
+            (MenuPrefs.getFloat(prefs, "${p}letter_size", 1.0f) * 100).toInt(),
+            "%"
+        ) {
+            prefs.edit().putFloat("${p}letter_size", it / 100f).apply()
+        }
+
+        addSlider(
+            slidersContainer,
+            "Opacità sfondo",
+            0, 100,
+            (MenuPrefs.getFloat(prefs, "${p}opacity", 0.0f) * 100).toInt(),
+            "%"
+        ) {
+            prefs.edit().putFloat("${p}opacity", it / 100f).apply()
+        }
+
+        addSlider(
+            slidersContainer,
+            if (isArc) "Ampiezza ventaglio arco" else "Inclinazione tastiera",
+            -90, 90,
+            MenuPrefs.getFloat(prefs, "${p}tilt", 0f).toInt(),
+            "°"
+        ) {
             prefs.edit().putFloat("${p}tilt", it.toFloat()).apply()
         }
-        if (isArcSection) {
-            addSlider(container, "Inclinazione tastiera (rotazione)", -180, 180, MenuPrefs.getFloat(prefs, "arc_rotation", 0f).toInt(), "°") {
+
+        if (isArc) {
+            addSlider(
+                slidersContainer,
+                "Rotazione arco",
+                -180, 180,
+                MenuPrefs.getFloat(prefs, "arc_rotation", 0f).toInt(),
+                "°"
+            ) {
                 prefs.edit().putFloat("arc_rotation", it.toFloat()).apply()
             }
-            addSlider(container, "Raggio interno (sposta righe verso l'esterno)", 15, 70, (MenuPrefs.getFloat(prefs, "arc_inner_radius", 0.34f) * 100).toInt(), "%") {
+
+            addSlider(
+                slidersContainer,
+                "Raggio interno arco",
+                15, 72,
+                (MenuPrefs.getFloat(prefs, "arc_inner_radius", 0.34f) * 100).toInt(),
+                "%"
+            ) {
                 prefs.edit().putFloat("arc_inner_radius", it / 100f).apply()
             }
-            addSlider(container, "Spazio radiale tra le righe", 0, 100, (MenuPrefs.getFloat(prefs, "arc_row_spacing", 0.35f) * 100).toInt(), "%") {
+
+            addSlider(
+                slidersContainer,
+                "Spaziatura tra le righe",
+                0, 100,
+                (MenuPrefs.getFloat(prefs, "arc_row_spacing", 0.35f) * 100).toInt(),
+                "%"
+            ) {
                 prefs.edit().putFloat("arc_row_spacing", it / 100f).apply()
             }
         }
-        addSlider(container, "Grandezza delle lettere", 60, 150, (MenuPrefs.getFloat(prefs, "${p}letter_size", 1.0f) * 100).toInt(), "%") {
-            prefs.edit().putFloat("${p}letter_size", it / 100f).apply()
-        }
-        addSlider(container, "Spazio angolare / tra lettere", 0, 100, (MenuPrefs.getFloat(prefs, "${p}key_spacing", 0.25f) * 100).toInt(), "%") {
+
+        addSlider(
+            slidersContainer,
+            "Spaziatura tra i tasti",
+            0, 100,
+            (MenuPrefs.getFloat(prefs, "${p}key_spacing", 0.25f) * 100).toInt(),
+            "%"
+        ) {
             prefs.edit().putFloat("${p}key_spacing", it / 100f).apply()
         }
-        addSlider(container, "Intensità ombra nera sotto lettere", 0, 100, (MenuPrefs.getFloat(prefs, "${p}shadow_strength", 0.92f) * 100).toInt(), "%") {
+
+        addSlider(
+            slidersContainer,
+            "Intensità ombra sotto le lettere",
+            0, 100,
+            (MenuPrefs.getFloat(prefs, "${p}shadow_strength", 0.92f) * 100).toInt(),
+            "%"
+        ) {
             prefs.edit().putFloat("${p}shadow_strength", it / 100f).apply()
         }
-        addSlider(container, "Ampiezza / sfocatura ombra nera", 0, 16, MenuPrefs.getFloat(prefs, "${p}shadow_blur", 7.0f).toInt(), "dp") {
+
+        addSlider(
+            slidersContainer,
+            "Sfocatura ombra lettere",
+            0, 16,
+            MenuPrefs.getFloat(prefs, "${p}shadow_blur", 7.0f).toInt(),
+            "dp"
+        ) {
             prefs.edit().putFloat("${p}shadow_blur", it.toFloat()).apply()
-        }
-        addSlider(container, "Opacità sfondo (0%=Senza sfondo)", 0, 100, (MenuPrefs.getFloat(prefs, "${p}alpha", 0.0f) * 100).toInt(), "%") {
-            prefs.edit().putFloat("${p}alpha", it / 100f).apply()
         }
     }
 
-    private fun addSlider(container: LinearLayout, title: String, min: Int, max: Int, current: Int, unit: String, onChange: (Int) -> Unit) {
+    private fun rebuildShortcutsList() {
+        val d = resources.displayMetrics.density
+        shortcutsContainer.removeAllViews()
+        val list = MenuPrefs.loadShortcuts(prefs)
+        for (sc in list) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#18181B"))
+                    cornerRadius = 8f * d
+                }
+                setPadding((10 * d).toInt(), (8 * d).toInt(), (10 * d).toInt(), (8 * d).toInt())
+            }
+            row.addView(TextView(this).apply {
+                text = "${sc.label}: ${sc.payload}"
+                textSize = 13f
+                setTextColor(Color.WHITE)
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(TextView(this).apply {
+                text = "Elimina"
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.parseColor("#F87171"))
+                setPadding((8 * d).toInt(), (4 * d).toInt(), (4 * d).toInt(), (4 * d).toInt())
+                setOnClickListener {
+                    MenuPrefs.removeShortcut(prefs, sc.id)
+                    rebuildShortcutsList()
+                }
+            })
+            shortcutsContainer.addView(row, marginBottom(6, d))
+        }
+    }
+
+    private fun addSlider(
+        container: LinearLayout,
+        label: String,
+        min: Int,
+        max: Int,
+        current: Int,
+        unit: String,
+        onChange: (Int) -> Unit
+    ) {
+        val d = resources.displayMetrics.density
         val clamped = current.coerceIn(min, max)
-        val lbl = label("$title: $clamped$unit")
-        container.addView(lbl)
-        container.addView(SeekBar(this).apply {
+
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val titleTv = TextView(this).apply {
+            text = label
+            textSize = 13f
+            setTextColor(Color.parseColor("#E4E4E7"))
+        }
+        val valueTv = TextView(this).apply {
+            text = "$clamped$unit"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+        }
+        headerRow.addView(titleTv, LinearLayout.LayoutParams(0, -2, 1f))
+        headerRow.addView(valueTv)
+
+        val seekBar = SeekBar(this).apply {
             this.max = max - min
             progress = clamped - min
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                    val v = min + value
-                    lbl.text = "$title: $v$unit"
-                    onChange(v)
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val v = min + progress
+                    valueTv.text = "$v$unit"
+                    if (fromUser) onChange(v)
                 }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
                 override fun onStopTrackingTouch(sb: SeekBar?) {}
             })
+        }
+
+        val block = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, (4 * d).toInt(), 0, (8 * d).toInt())
+            addView(headerRow)
+            addView(seekBar)
+        }
+        container.addView(block)
+    }
+
+    private fun createCard(d: Float): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#111114"))
+                cornerRadius = 14f * d
+                setStroke((1f * d).toInt(), Color.parseColor("#27272A"))
+            }
+            setPadding((14 * d).toInt(), (14 * d).toInt(), (14 * d).toInt(), (14 * d).toInt())
+        }
+
+    private fun addSectionTitle(card: LinearLayout, title: String, d: Float) {
+        card.addView(TextView(this).apply {
+            text = title
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, (10 * d).toInt())
         })
     }
 
-    private fun refreshMenuConfig() {
-        val density = resources.displayMetrics.density
-        menuConfigList.removeAllViews()
-        val entries = MenuPrefs.getEntries(prefs, forSettingsScreen = true)
-
-        entries.forEachIndexed { idx, entry ->
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                background = GradientDrawable().apply { setColor(Color.parseColor("#121215")); cornerRadius = 10f * density }
-                setPadding((10 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
+    private fun createActionButton(text: String, primary: Boolean, d: Float, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(if (primary) Color.BLACK else Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(if (primary) Color.WHITE else Color.parseColor("#1E1E24"))
+                cornerRadius = 10f * d
+                if (!primary) setStroke((1f * d).toInt(), Color.parseColor("#3F3F46"))
             }
-            val toggle = { MenuPrefs.toggleVisibility(prefs, entry.id); refreshMenuConfig() }
-
-            row.addView(TextView(this).apply {
-                text = if (entry.enabled) "☑" else "☐"; textSize = 16f
-                setTextColor(if (entry.enabled) Color.WHITE else Color.parseColor("#6E6E73"))
-                setPadding((4 * density).toInt(), 0, (10 * density).toInt(), 0)
-                setOnClickListener { toggle() }
-            })
-            row.addView(TextView(this).apply {
-                text = entry.title; textSize = 13f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-                setTextColor(if (entry.enabled) Color.WHITE else Color.parseColor("#6E6E73"))
-                setOnClickListener { toggle() }
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-
-            row.addView(TextView(this).apply {
-                text = "▲"; textSize = 13f
-                setTextColor(if (idx > 0) Color.WHITE else Color.parseColor("#383840"))
-                setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
-                setOnClickListener { if (idx > 0) { MenuPrefs.moveItem(prefs, entry.id, -1); refreshMenuConfig() } }
-            })
-            row.addView(TextView(this).apply {
-                text = "▼"; textSize = 13f
-                setTextColor(if (idx < entries.lastIndex) Color.WHITE else Color.parseColor("#383840"))
-                setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
-                setOnClickListener { if (idx < entries.lastIndex) { MenuPrefs.moveItem(prefs, entry.id, +1); refreshMenuConfig() } }
-            })
-            menuConfigList.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (5 * density).toInt() })
+            setPadding((12 * d).toInt(), (11 * d).toInt(), (12 * d).toInt(), (11 * d).toInt())
+            setOnClickListener { onClick() }
         }
-    }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 202 && resultCode == RESULT_OK && data != null) {
-            try {
-                @Suppress("DEPRECATION")
-                val intent = data.getParcelableExtra<Intent>(Intent.EXTRA_SHORTCUT_INTENT) ?: return
-                @Suppress("DEPRECATION")
-                val name = data.getStringExtra(Intent.EXTRA_SHORTCUT_NAME)?.trim().orEmpty().ifEmpty { "Scorciatoia App" }
-                addShortcut("INTENT_URI", name, intent.toUri(Intent.URI_INTENT_SCHEME))
-            } catch (_: Throwable) {}
+    private fun createSegmentButton(label: String, d: Float, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding((10 * d).toInt(), (10 * d).toInt(), (10 * d).toInt(), (10 * d).toInt())
+            setOnClickListener { onClick() }
         }
-    }
 
-    private fun showAppsDialog() {
-        try {
-            val apps = packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
-                .mapNotNull { ri -> ri.activityInfo?.packageName?.let { ri.loadLabel(packageManager).toString() to it } }
-                .distinctBy { it.second }
-                .sortedBy { it.first.lowercase() }
-            if (apps.isEmpty()) return
-            AlertDialog.Builder(this)
-                .setTitle("Scegli un'App per il menu ✦")
-                .setItems(apps.map { it.first }.toTypedArray()) { _, w -> addShortcut("APP", apps[w].first, apps[w].second) }
-                .show()
-        } catch (_: Throwable) {}
-    }
-
-    private fun addShortcut(type: String, label: String, payload: String) {
-        val list = MenuPrefs.loadShortcuts(prefs).toMutableList()
-        list.add(MenuPrefs.Shortcut("sc_${System.currentTimeMillis()}_${list.size}", type, label, payload))
-        MenuPrefs.saveShortcuts(prefs, list)
-        refreshShortcuts()
-        refreshMenuConfig()
-        Toast.makeText(this, "'$label' aggiunta al menu ✦", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun refreshShortcuts() {
-        val density = resources.displayMetrics.density
-        shortcutsList.removeAllViews()
-        MenuPrefs.loadShortcuts(prefs).forEachIndexed { idx, sc ->
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                background = GradientDrawable().apply { setColor(Color.parseColor("#121215")); cornerRadius = 10f * density }
-                setPadding((12 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
-            }
-            val tag = when (sc.type) { "SAMSUNG_ASSIST" -> "[Samsung]"; "INTENT_URI" -> "[Shortcut]"; "APP" -> "[App]"; else -> "[Testo]" }
-            row.addView(TextView(this).apply {
-                text = "$tag ${sc.label}${if (sc.type == "TEXT") ": ${sc.payload}" else ""}"
-                textSize = 13f; setTextColor(Color.parseColor("#D1D1D6")); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(TextView(this).apply {
-                text = "✕"; textSize = 14f; setTextColor(Color.parseColor("#8E8E93"))
-                setPadding((12 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
-                setOnClickListener {
-                    val updated = MenuPrefs.loadShortcuts(prefs).toMutableList()
-                    if (idx in updated.indices) {
-                        val rem = updated.removeAt(idx).id
-                        MenuPrefs.saveShortcuts(prefs, updated)
-                        val order = (MenuPrefs.getString(prefs, "orb_menu_order", "") ?: "").split(",").filter { it.isNotBlank() && it != rem }
-                        val hidden = (MenuPrefs.getString(prefs, "orb_menu_hidden", "") ?: "").split(",").filter { it.isNotBlank() && it != rem }
-                        prefs.edit().putString("orb_menu_order", order.joinToString(",")).putString("orb_menu_hidden", hidden.joinToString(",")).apply()
-                        refreshShortcuts(); refreshMenuConfig()
-                    }
-                }
-            })
-            shortcutsList.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (6 * density).toInt() })
-        }
-    }
-
-    private fun groupTitle(t: String) = TextView(this).apply {
+    private fun styleSegmentButton(btn: TextView, selected: Boolean) {
         val d = resources.displayMetrics.density
-        text = t; textSize = 12f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
-        setPadding(0, (12 * d).toInt(), 0, (6 * d).toInt())
-    }
-
-    private fun label(t: String) = TextView(this).apply {
-        val d = resources.displayMetrics.density
-        text = t; textSize = 13f; setTextColor(Color.parseColor("#D1D1D6"))
-        setPadding(0, (9 * d).toInt(), 0, (4 * d).toInt())
-    }
-
-    private fun divider(d: Float) = View(this).apply {
-        setBackgroundColor(Color.parseColor("#242429"))
-        layoutParams = LinearLayout.LayoutParams(-1, (1 * d).toInt().coerceAtLeast(1)).apply {
-            topMargin = (18 * d).toInt(); bottomMargin = (4 * d).toInt()
+        btn.setTextColor(if (selected) Color.BLACK else Color.WHITE)
+        btn.background = GradientDrawable().apply {
+            setColor(if (selected) Color.WHITE else Color.parseColor("#1E1E24"))
+            cornerRadius = 9f * d
         }
     }
 
-    private fun inputBox(hintText: String, d: Float) = EditText(this).apply {
-        hint = hintText; setHintTextColor(Color.parseColor("#6E6E73")); setTextColor(Color.WHITE)
-        setBackgroundColor(Color.parseColor("#121215"))
-        setPadding((12 * d).toInt(), (12 * d).toInt(), (12 * d).toInt(), (12 * d).toInt())
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (8 * d).toInt() }
-    }
-
-    private fun actionBtn(text: String, bgHex: String = "#141417", fgHex: String = "#FFFFFF", onClick: () -> Unit) = Button(this).apply {
-        val d = resources.displayMetrics.density
-        this.text = text; isAllCaps = false; textSize = 14f; setTextColor(Color.parseColor(fgHex))
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor(bgHex)); cornerRadius = 12f * d
-            setStroke((1 * d).toInt(), Color.parseColor("#323236"))
-        }
-        setPadding((14 * d).toInt(), (12 * d).toInt(), (14 * d).toInt(), (12 * d).toInt())
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (8 * d).toInt() }
-        setOnClickListener { onClick() }
-    }
+    private fun marginBottom(dp: Int, d: Float): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (dp * d).toInt() }
 }
