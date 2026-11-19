@@ -12,7 +12,6 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -50,9 +49,8 @@ class FloatingOrbService : Service() {
     private var swipeContainer: LinearLayout? = null
     private var swipeParams: WindowManager.LayoutParams? = null
 
-    private var cursorOverlay: RemoteCursorOverlay? = null
-    private var cursorPointerParams: WindowManager.LayoutParams? = null
-    private var cursorPadParams: WindowManager.LayoutParams? = null
+    private var cursorPuckView: RemoteCursorOverlay.CursorPuckView? = null
+    private var cursorPuckParams: WindowManager.LayoutParams? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -105,7 +103,7 @@ class FloatingOrbService : Service() {
         try { prefs.unregisterOnSharedPreferenceChangeListener(prefListener) } catch (_: Throwable) {}
         removeMenuWindow()
         removeSwipeWindow()
-        removeCursorWindows()
+        removeCursorPuck()
         try { if (::orbView.isInitialized) wm.removeView(orbView) } catch (_: Throwable) {}
         super.onDestroy()
     }
@@ -167,8 +165,6 @@ class FloatingOrbService : Service() {
         removeSwipeWindow()
     }
 
-    // --- Tasto Magico Globale ✦ ---
-
     private inner class GlobalOrbView(context: Context) : View(context) {
         private var downRawX = 0f
         private var downRawY = 0f
@@ -216,7 +212,6 @@ class FloatingOrbService : Service() {
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (isEditingMenu) {
-                        // In modalità Edit puoi trascinare direttamente il pallino ✦ ovunque sullo schermo
                         val sw = resources.displayMetrics.widthPixels.coerceAtLeast(320)
                         val sh = resources.displayMetrics.heightPixels.coerceAtLeast(320)
                         val maxL = (sw - orbParams.width).coerceAtLeast(1)
@@ -258,8 +253,6 @@ class FloatingOrbService : Service() {
             return true
         }
     }
-
-    // --- Menu ✦ Globale ---
 
     private fun openMenu() {
         isEditingMenu = false
@@ -324,7 +317,7 @@ class FloatingOrbService : Service() {
             isKbVisible = ime?.isKeyboardShown() ?: false,
             isArcMode = MenuPrefs.getBool(prefs, "kb_arc_mode", true),
             isListening = false,
-            isMouseOpen = cursorOverlay != null,
+            isMouseOpen = cursorPuckView != null,
             isIncognito = ime?.isIncognito() ?: false
         )
 
@@ -514,7 +507,6 @@ class FloatingOrbService : Service() {
                 if (ime != null) {
                     ime.startVoiceDictation()
                 } else {
-                    // Anche fuori dalla tastiera, avvia direttamente Notune Transcribe (dev.notune.transcribe)
                     val pkg = MenuPrefs.NOTUNE_PKG
                     try {
                         val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -570,8 +562,6 @@ class FloatingOrbService : Service() {
             }
         }
     }
-
-    // --- Barra Suggerimenti Swipe sopra ✦ ---
 
     fun showSwipeCandidates(candidates: List<String>) {
         if (candidates.size <= 1) {
@@ -632,71 +622,47 @@ class FloatingOrbService : Service() {
         swipeParams = null
     }
 
-    // --- Mouse Globale (Material Design 3) su ogni schermata ---
+    // --- Pallino Cursore Semplice (Trascina + Tap) ---
 
     private fun toggleGlobalCursor() {
-        if (cursorOverlay != null) {
-            removeCursorWindows()
+        if (cursorPuckView != null) {
+            removeCursorPuck()
             return
         }
-        val overlay = RemoteCursorOverlay(
-            context = this,
-            onClose = { removeCursorWindows() },
-            onRequestOpenAccessibility = {
-                Toast.makeText(this, "Attiva 'Tastiera 45° - Remote Cursor' in Accessibilità", Toast.LENGTH_LONG).show()
-                try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }) } catch (_: Throwable) {}
-            },
-            onTouchableRegionChanged = { rect ->
-                cursorPadParams?.let { p ->
-                    p.x = rect.left
-                    p.y = rect.top
-                    p.width = rect.width().coerceAtLeast(1)
-                    p.height = rect.height().coerceAtLeast(1)
-                    cursorOverlay?.let { ov ->
-                        try { wm.updateViewLayout(ov.detachTrackpadForWindow(), p) } catch (_: Throwable) {}
-                    }
-                }
-            }
-        )
-        overlay.resetPositions(MenuPrefs.getFloat(prefs, "orb_x_pct", 0.96f) < 0.5f)
-        cursorOverlay = overlay
-
-        // 1. Finestra full-screen NON toccabile per disegnare puntatore + ripple ovunque
-        cursorPointerParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.TOP or Gravity.START }
-        wm.addView(overlay, cursorPointerParams)
-
-        // 2. Finestra compatta toccabile per il solo trackpad Material Design
-        val padView = overlay.detachTrackpadForWindow()
-        val rect = overlay.getPadBounds()
-        cursorPadParams = WindowManager.LayoutParams(
-            rect.width().coerceAtLeast(1),
-            rect.height().coerceAtLeast(1),
+        val sw = resources.displayMetrics.widthPixels.coerceAtLeast(320)
+        val sh = resources.displayMetrics.heightPixels.coerceAtLeast(320)
+        val puck = RemoteCursorOverlay.CursorPuckView(this)
+        val size = puck.desiredSizePx()
+        val params = WindowManager.LayoutParams(
+            size, size,
             overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = rect.left
-            y = rect.top
+            x = (sw * 0.45f).toInt().coerceIn(0, (sw - size).coerceAtLeast(0))
+            y = (sh * 0.45f).toInt().coerceIn(0, (sh - size).coerceAtLeast(0))
         }
-        wm.addView(padView, cursorPadParams)
+
+        puck.onDragDelta = { dx, dy ->
+            params.x = (params.x + dx).coerceIn(0, (sw - size).coerceAtLeast(0))
+            params.y = (params.y + dy).coerceIn(0, (sh - size).coerceAtLeast(0))
+            try { wm.updateViewLayout(puck, params) } catch (_: Throwable) {}
+        }
+        puck.onCloseRequested = { removeCursorPuck() }
+        puck.onAccessibilityMissing = {
+            Toast.makeText(this, "Attiva 'Tastiera 45° - Remote Cursor' in Accessibilità", Toast.LENGTH_LONG).show()
+            try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }) } catch (_: Throwable) {}
+        }
+
+        wm.addView(puck, params)
+        cursorPuckView = puck
+        cursorPuckParams = params
     }
 
-    private fun removeCursorWindows() {
-        cursorOverlay?.let { ov ->
-            try { wm.removeView(ov.detachTrackpadForWindow()) } catch (_: Throwable) {}
-            try { wm.removeView(ov) } catch (_: Throwable) {}
-        }
-        cursorOverlay = null
-        cursorPointerParams = null
-        cursorPadParams = null
+    private fun removeCursorPuck() {
+        cursorPuckView?.let { try { wm.removeView(it) } catch (_: Throwable) {} }
+        cursorPuckView = null
+        cursorPuckParams = null
     }
 }
