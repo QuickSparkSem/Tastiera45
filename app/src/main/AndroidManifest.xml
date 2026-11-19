@@ -1,18 +1,69 @@
-<!-- Aggiungi fuori da <application>, vicino agli altri <uses-permission> -->
-<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-<queries>
-    <package android:name="dev.notune.transcribe" />
-    <package android:name="com.samsung.android.honeyboard" />
-    <intent>
-        <action android:name="android.speech.RecognitionService" />
-    </intent>
-    <intent>
-        <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
-    </intent>
-</queries>
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-<!-- Aggiungi dentro <application> -->
-<service
-    android:name=".FloatingOrbService"
-    android:exported="false" />
+    <queries>
+        <package android:name="dev.notune.transcribe" />
+        <package android:name="com.samsung.android.honeyboard" />
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:label="Tastiera 45°"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".Tastiera45Service"
+            android:exported="true"
+            android:label="Tastiera 45°"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
+        </service>
+
+        <service
+            android:name=".RemoteCursorAccessibilityService"
+            android:exported="true"
+            android:label="Tastiera 45° - Remote Cursor"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <service
+            android:name=".FloatingOrbService"
+            android:exported="false" />
+
+    </application>
+
+</manifest>
