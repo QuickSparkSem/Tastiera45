@@ -1,6 +1,11 @@
 package com.tastiera45.ime
 
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.os.Bundle
+import android.view.inputmethod.InputMethodManager
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -13,7 +18,7 @@ data class MenuEntry(
 data class CustomShortcut(
     val id: String,
     val label: String,
-    val type: String, // "TEXT", "APP", "INTENT_URI"
+    val type: String,
     val payload: String
 )
 
@@ -26,23 +31,71 @@ object OrbBridge {
     }
 }
 
+/**
+ * Activity trasparente istantanea per aprire il selettore nativo Android
+ * dei metodi di immissione anche quando la tastiera non è in primo piano.
+ */
+class ImePickerActivity : Activity() {
+    private var shown = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.setBackgroundDrawableResource(android.R.color.transparent)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && !shown) {
+            shown = true
+            try {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                    ?.showInputMethodPicker()
+            } catch (_: Throwable) {
+            }
+            window.decorView.postDelayed({ finish() }, 250L)
+        }
+    }
+}
+
 object MenuPrefs {
     const val NOTUNE_PKG = "dev.notune.transcribe"
 
     private data class DefaultEntry(val id: String, val baseTitle: String, val defaultEnabled: Boolean)
 
     private val defaultEntries = listOf(
+        DefaultEntry("PICK_IME", "Scegli Tastiera (Menu Android)", true),
+        DefaultEntry("VOICE", "Dettatura Vocale (Compatta)", true),
         DefaultEntry("LAUNCH_KB_45", "Tastiera 45°", true),
         DefaultEntry("LAUNCH_KB_SAMSUNG", "Tastiera Samsung", true),
         DefaultEntry("TOGGLE_KB", "Mostra / Nascondi Tastiera", true),
         DefaultEntry("SWITCH_STYLE", "Cambia Arco / Pop-up", true),
-        DefaultEntry("VOICE", "Dettatura Vocale", true),
         DefaultEntry("MOUSE", "Cursore Mouse", true),
         DefaultEntry("CLIPBOARD", "Appunti", true),
         DefaultEntry("TRANSLATE", "Traduci", true),
         DefaultEntry("INCOGNITO", "Modalità Incognito", true),
         DefaultEntry("SETTINGS", "Impostazioni Tastiera 45°", true)
     )
+
+    fun openSystemImePicker(context: Context) {
+        val ime = OrbBridge.activeIme
+        if (ime != null) {
+            ime.showAndroidImePicker()
+            return
+        }
+        try {
+            context.startActivity(
+                Intent(context, ImePickerActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                }
+            )
+        } catch (_: Throwable) {
+            try {
+                (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                    ?.showInputMethodPicker()
+            } catch (_: Throwable) {
+            }
+        }
+    }
 
     fun getBool(p: SharedPreferences, key: String, def: Boolean): Boolean =
         if (p.contains(key)) p.getBoolean(key, def) else def
@@ -162,7 +215,7 @@ object MenuPrefs {
             val title = when (id) {
                 "TOGGLE_KB" -> if (isKbVisible) "Nascondi Tastiera" else "Mostra Tastiera"
                 "SWITCH_STYLE" -> if (isArcMode) "Passa a Pop-up" else "Passa a Arco"
-                "VOICE" -> if (isListening) "Stop Dettatura" else "Dettatura Vocale"
+                "VOICE" -> if (isListening) "Stop Dettatura" else "Dettatura Vocale (Compatta)"
                 "MOUSE" -> if (isMouseOpen) "Chiudi Cursore" else "Cursore Mouse"
                 "INCOGNITO" -> if (isIncognito) "Esci da Incognito" else "Modalità Incognito"
                 else -> def?.baseTitle ?: "⚡ ${sc!!.label}"
