@@ -1,7 +1,6 @@
 package com.tastiera45.ime
 
 import android.Manifest
-import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -44,7 +43,7 @@ import kotlin.math.sin
 class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActionListener {
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var rootContainer: FrameLayout
+    private lateinit var rootContainer: FullScreenImeRootLayout
     private lateinit var keyboardView: AngledKeyboardView
     private lateinit var orbView: InternalOrbView
     private lateinit var extraPanelContainer: LinearLayout
@@ -59,14 +58,16 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private var isListeningVoice = false
     private var isEditingMenu = false
     private var isClipboardMode = false
+    private var isDraggingKeyboard = false
     private var hoveredMenuId: String? = null
     private val menuOptionViews = mutableListOf<Pair<String, TextView>>()
 
     private val handler = Handler(Looper.getMainLooper())
 
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        if (isDraggingKeyboard) return@OnSharedPreferenceChangeListener
         handler.post {
-            if (::keyboardView.isInitialized) {
+            if (::keyboardView.isInitialized && !isDraggingKeyboard) {
                 applyKeyboardStyle()
                 positionFloatingViews()
                 syncOrbVisibility()
@@ -87,6 +88,25 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 prefs.edit().putString("saved_clipboard", updated.joinToString("\u001E")).apply()
             }
         } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Contenitore IME a schermo intero:
+     * Forza larghezza e altezza dell'intero display così la tastiera concentrica
+     * può essere trascinata liberamente ovunque sugli assi X e Y, mentre onComputeInsets
+     * lascia passare i tocchi trasparenti alle app sottostanti.
+     */
+    private class FullScreenImeRootLayout(context: Context) : FrameLayout(context) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val dm = resources.displayMetrics
+            val w = MeasureSpec.getSize(widthMeasureSpec).takeIf { it > 0 } ?: dm.widthPixels
+            val h = dm.heightPixels.coerceAtLeast(MeasureSpec.getSize(heightMeasureSpec))
+            super.onMeasure(
+                MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY)
+            )
+            setMeasuredDimension(w, h)
         }
     }
 
@@ -126,11 +146,11 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     override fun onCreateInputView(): View {
         val density = resources.displayMetrics.density
-        rootContainer = FrameLayout(this).apply {
+        rootContainer = FullScreenImeRootLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
+                resources.displayMetrics.heightPixels
             )
         }
 
@@ -289,7 +309,9 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     private fun applyKeyboardStyle() {
         if (!::keyboardView.isInitialized) return
         val isArcLeft = MenuPrefs.getBool(prefs, "kb_arc_left", false)
+        val langMode = MenuPrefs.getString(prefs, "kb_lang_mode", "BILINGUAL") ?: "BILINGUAL"
 
+        keyboardView.setLanguageMode(langMode)
         keyboardView.applyStyle(
             arcLeft = isArcLeft,
             scale = MenuPrefs.getFloat(prefs, "arc_scale", 0.86f),
@@ -405,6 +427,22 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
+    fun cycleLanguageMode() {
+        val current = MenuPrefs.getString(prefs, "kb_lang_mode", "BILINGUAL") ?: "BILINGUAL"
+        val next = when (current) {
+            "BILINGUAL" -> "IT"
+            "IT" -> "EN"
+            else -> "BILINGUAL"
+        }
+        prefs.edit().putString("kb_lang_mode", next).apply()
+        val label = when (next) {
+            "IT" -> "Lingua: Solo Italiano"
+            "EN" -> "Lingua: Solo English"
+            else -> "Lingua: Bilingue (IT + EN)"
+        }
+        Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+    }
+
     fun toggleManualIncognito() {
         manualIncognito = !manualIncognito
         val active = isIncognito()
@@ -482,8 +520,9 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         val trailingSpaces = before.length - trimmed.length
         val lastWord = trimmed.substringAfterLast(' ').substringAfterLast('\n')
         if (lastWord.isNotEmpty()) {
+            val suffix = if (trailingSpaces > 0) " " else ""
             ic.deleteSurroundingText(lastWord.length + trailingSpaces, 0)
-            ic.commitText("$word ", 1)
+            ic.commitText("$word$suffix", 1)
             if (::keyboardView.isInitialized) {
                 keyboardView.learnWord(word, isIncognito())
             }
@@ -580,9 +619,11 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 })
             }
 
+            val langPref = MenuPrefs.getString(prefs, "kb_lang_mode", "BILINGUAL") ?: "BILINGUAL"
+            val voiceLocale = if (langPref == "EN") "en-US" else "it-IT"
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "it-IT")
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, voiceLocale)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             }
             speechRecognizer?.startListening(intent)
@@ -630,9 +671,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         if (::extraPanelContainer.isInitialized && extraPanelContainer.visibility == View.VISIBLE && !isEditingMenu) {
             extraPanelContainer.visibility = View.GONE
         }
-        if (!isListeningVoice && ::swipeBarContainer.isInitialized && swipeBarContainer.visibility == View.VISIBLE) {
-            swipeBarContainer.visibility = View.GONE
-        }
         OrbBridge.overlayService?.hidePopupsOnTyping()
 
         val ic = currentInputConnection ?: return
@@ -641,9 +679,22 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             val lastWord = before.substringAfterLast(' ').substringAfterLast('\n')
             if (lastWord.length >= 2) {
                 keyboardView.learnWord(lastWord, isIncognito())
+                val corrections = keyboardView.suggestTapCorrections(lastWord)
+                if (corrections.isNotEmpty()) {
+                    onTapCorrectionCandidates(corrections)
+                } else if (!isListeningVoice && ::swipeBarContainer.isInitialized) {
+                    swipeBarContainer.visibility = View.GONE
+                }
+            } else if (!isListeningVoice && ::swipeBarContainer.isInitialized) {
+                swipeBarContainer.visibility = View.GONE
             }
-        } else if (text.trim().length >= 2 && text.endsWith(" ") && ::keyboardView.isInitialized) {
-            keyboardView.learnWord(text.trim(), isIncognito())
+        } else {
+            if (!isListeningVoice && ::swipeBarContainer.isInitialized && swipeBarContainer.visibility == View.VISIBLE) {
+                swipeBarContainer.visibility = View.GONE
+            }
+            if (text.trim().length >= 2 && text.endsWith(" ") && ::keyboardView.isInitialized) {
+                keyboardView.learnWord(text.trim(), isIncognito())
+            }
         }
         ic.commitText(text, 1)
     }
@@ -718,6 +769,16 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
+    override fun onTapCorrectionCandidates(candidates: List<String>) {
+        if (candidates.isEmpty()) return
+        val overlay = OrbBridge.overlayService
+        if (overlay != null) {
+            overlay.showSwipeCandidates(candidates)
+            return
+        }
+        showCandidateStrip(candidates)
+    }
+
     override fun onSwipeWordDecoded(candidates: List<String>) {
         if (candidates.size <= 1) return
         val overlay = OrbBridge.overlayService
@@ -725,6 +786,10 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             overlay.showSwipeCandidates(candidates)
             return
         }
+        showCandidateStrip(candidates)
+    }
+
+    private fun showCandidateStrip(candidates: List<String>) {
         if (!::swipeBarContainer.isInitialized) return
         val density = resources.displayMetrics.density
         swipeBarContainer.removeAllViews()
@@ -760,24 +825,30 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         positionFloatingViews()
     }
 
-    override fun onDragFloatingKeyboard(deltaScreenX: Float, deltaScreenY: Float) {
+    override fun onDragFloatingKeyboard(deltaScreenX: Float, deltaScreenY: Float, isFinished: Boolean) {
         if (!::keyboardView.isInitialized || !::rootContainer.isInitialized) return
         val sw = rootContainer.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
         val sh = rootContainer.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
         val lp = keyboardView.layoutParams as? FrameLayout.LayoutParams ?: return
         val maxLeft = (sw - keyboardView.width).coerceAtLeast(1)
-        val maxBottom = (sh - keyboardView.height).coerceAtLeast(0)
+        val maxBottom = (sh - keyboardView.height).coerceAtLeast(1)
 
-        val newLeft = (lp.leftMargin + deltaScreenX.toInt()).coerceIn(0, maxLeft)
-        val newBottom = (lp.bottomMargin - deltaScreenY.toInt()).coerceIn(0, maxBottom)
-        lp.leftMargin = newLeft
-        lp.bottomMargin = newBottom
-        keyboardView.requestLayout()
-
-        prefs.edit()
-            .putFloat("kb_x_pct", (newLeft.toFloat() / maxLeft).coerceIn(0f, 1f))
-            .putInt("kb_bottom_offset", newBottom)
-            .apply()
+        if (!isFinished) {
+            isDraggingKeyboard = true
+            val newLeft = (lp.leftMargin + deltaScreenX.toInt()).coerceIn(0, maxLeft)
+            val newBottom = (lp.bottomMargin - deltaScreenY.toInt()).coerceIn(0, maxBottom)
+            lp.leftMargin = newLeft
+            lp.bottomMargin = newBottom
+            keyboardView.requestLayout()
+        } else {
+            val savedLeft = lp.leftMargin.coerceIn(0, maxLeft)
+            val savedBottom = lp.bottomMargin.coerceIn(0, maxBottom)
+            prefs.edit()
+                .putFloat("kb_x_pct", (savedLeft.toFloat() / maxLeft).coerceIn(0f, 1f))
+                .putInt("kb_bottom_offset", savedBottom)
+                .apply()
+            isDraggingKeyboard = false
+        }
     }
 
     // =========================================================================
@@ -1064,6 +1135,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     private fun executeInternalAction(id: String) {
         when (id) {
+            "LANG_MODE" -> cycleLanguageMode()
             "PICK_IME" -> showAndroidImePicker()
             "LAUNCH_KB_45" -> setKeyboard45Visible(true)
             "LAUNCH_KB_SAMSUNG" -> switchToSamsungKeyboard()
