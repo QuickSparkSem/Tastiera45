@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.speech.RecognitionService
@@ -33,10 +34,11 @@ import android.widget.Toast
 class MainActivity : Activity() {
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var overlayPermBtn: Button
     private lateinit var menuConfigList: LinearLayout
     private lateinit var shortcutsList: LinearLayout
-    private val voiceComponents = mutableListOf<ComponentName?>(null)
-    private val voiceLabels = mutableListOf("Predefinito di sistema (Automatico)")
+    private val voiceValues = mutableListOf<String>()
+    private val voiceLabels = mutableListOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,6 +51,10 @@ class MainActivity : Activity() {
         val density = resources.displayMetrics.density
         prefs = getSharedPreferences("tastiera45_prefs", Context.MODE_PRIVATE)
 
+        if (Settings.canDrawOverlays(this)) {
+            try { startService(Intent(this, FloatingOrbService::class.java)) } catch (_: Throwable) {}
+        }
+
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((20 * density).toInt(), (32 * density).toInt(), (20 * density).toInt(), (32 * density).toInt())
@@ -56,14 +62,11 @@ class MainActivity : Activity() {
 
         container.addView(TextView(this).apply {
             text = "Tastiera Minimal & Arco"
-            textSize = 24f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            textSize = 24f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
         })
         container.addView(TextView(this).apply {
-            text = "Caratteri sospesi con ombra nera, senza contorni, regolabili separatamente per entrambi i layout."
-            textSize = 13.5f
-            setTextColor(Color.parseColor("#8E8E93"))
+            text = "Pulsante magico ✦ sempre attivo su ogni schermata, dettatura Notune Transcribe e tastiera concentrica regolabile."
+            textSize = 13.5f; setTextColor(Color.parseColor("#8E8E93"))
             setPadding(0, (6 * density).toInt(), 0, (18 * density).toInt())
         })
 
@@ -77,6 +80,18 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Trova 'Tastiera 45° - Remote Cursor' e attivalo", Toast.LENGTH_LONG).show()
             try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } catch (_: Throwable) {}
         })
+
+        overlayPermBtn = actionBtn("") {
+            if (Settings.canDrawOverlays(this)) {
+                try { startService(Intent(this, FloatingOrbService::class.java)) } catch (_: Throwable) {}
+                Toast.makeText(this, "Tasto Magico ✦ attivo su tutte le schermate!", Toast.LENGTH_SHORT).show()
+            } else {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                } catch (_: Throwable) {}
+            }
+        }
+        container.addView(overlayPermBtn)
 
         // =========================================================================
         // GENERALE & AVVIO
@@ -97,12 +112,12 @@ class MainActivity : Activity() {
 
         val startBtn = actionBtn("") {}
         fun updateStartBtn() {
-            val orbOnly = MenuPrefs.getBool(prefs, "orb_only_start", true)
-            startBtn.text = if (orbOnly) "Avvio campo testo: SOLO TASTO MAGICO ✦" else "Avvio campo testo: TASTIERA SUBITO APERTA"
+            val orbOnly = MenuPrefs.getBool(prefs, "orb_only_start", false)
+            startBtn.text = if (orbOnly) "Avvio campo testo: SOLO TASTO MAGICO ✦" else "Avvio campo testo: TASTIERA + TASTO ✦"
         }
         updateStartBtn()
         startBtn.setOnClickListener {
-            prefs.edit().putBoolean("orb_only_start", !MenuPrefs.getBool(prefs, "orb_only_start", true)).apply()
+            prefs.edit().putBoolean("orb_only_start", !MenuPrefs.getBool(prefs, "orb_only_start", false)).apply()
             updateStartBtn()
         }
         container.addView(startBtn)
@@ -129,7 +144,7 @@ class MainActivity : Activity() {
         }
         container.addView(cornerBtn)
 
-        addStyleSliders(container, "arc_", defaultX = 1.0f, defaultScale = 0.86f, tiltTitle = "Apertura / angolo arco", includeArcRotation = true, density = density)
+        addStyleSliders(container, "arc_", defaultX = 1.0f, defaultScale = 0.86f, tiltTitle = "Apertura / angolo arco", isArcSection = true, density = density)
 
         // =========================================================================
         // SEZIONE 2: TASTIERA POP-UP SCOLPITO
@@ -137,7 +152,7 @@ class MainActivity : Activity() {
         container.addView(divider(density))
         container.addView(groupTitle("SEZIONE 2 — TASTIERA POP-UP SCOLPITO"))
 
-        addStyleSliders(container, "popup_", defaultX = 0.50f, defaultScale = 0.82f, tiltTitle = "Inclinazione pop-up", includeArcRotation = false, density = density)
+        addStyleSliders(container, "popup_", defaultX = 0.50f, defaultScale = 0.82f, tiltTitle = "Inclinazione pop-up", isArcSection = false, density = density)
 
         // =========================================================================
         // SEZIONE 3: PULSANTE MAGICO (✦) — POSIZIONE, TASTI E ORDINE
@@ -194,20 +209,12 @@ class MainActivity : Activity() {
         refreshShortcuts()
 
         // =========================================================================
-        // SEZIONE 5: DETTATURA VOCALE E CAMPO PROVA
+        // SEZIONE 5: DETTATURA VOCALE (Notune Transcribe + altri motori)
         // =========================================================================
         container.addView(divider(density))
-        container.addView(groupTitle("DETTATURA VOCALE"))
+        container.addView(groupTitle("DETTATURA VOCALE (NOTUNE TRANSCRIBE)"))
 
-        try {
-            packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0).forEach { ri ->
-                ri.serviceInfo?.let { si ->
-                    voiceComponents.add(ComponentName(si.packageName, si.name))
-                    voiceLabels.add("${ri.loadLabel(packageManager)} (${si.packageName})")
-                }
-            }
-        } catch (_: Throwable) {}
-
+        populateVoiceEngines()
         val spinner = Spinner(this).apply { setBackgroundColor(Color.parseColor("#141417")) }
         spinner.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, voiceLabels) {
             override fun getView(pos: Int, v: View?, p: ViewGroup) = (super.getView(pos, v, p) as TextView).apply {
@@ -218,11 +225,12 @@ class MainActivity : Activity() {
                 setPadding((14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt(), (14 * density).toInt())
             }
         }
-        val savedVoice = MenuPrefs.getString(prefs, "voice_service_component", null)
-        spinner.setSelection(voiceComponents.indexOfFirst { it?.flattenToString() == savedVoice }.coerceAtLeast(0))
+        val defaultVoice = if (MenuPrefs.isPackageInstalled(this, MenuPrefs.NOTUNE_PKG)) MenuPrefs.NOTUNE_PREF_KEY else ""
+        val savedVoice = MenuPrefs.getString(prefs, "voice_service_component", defaultVoice) ?: defaultVoice
+        spinner.setSelection(voiceValues.indexOf(savedVoice).coerceAtLeast(0))
         spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                prefs.edit().putString("voice_service_component", voiceComponents.getOrNull(pos)?.flattenToString()).apply()
+                prefs.edit().putString("voice_service_component", voiceValues.getOrNull(pos) ?: "").apply()
             }
             override fun onNothingSelected(p: AdapterView<*>?) {}
         }
@@ -237,8 +245,53 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        val canDraw = Settings.canDrawOverlays(this)
+        if (::overlayPermBtn.isInitialized) {
+            overlayPermBtn.text = if (canDraw) "4. ✓ Tasto Magico ✦ attivo su ogni schermata" else "4. Attiva Tasto Magico ✦ su ogni schermata (Sovrapponi app)"
+        }
+        if (canDraw) {
+            try { startService(Intent(this, FloatingOrbService::class.java)) } catch (_: Throwable) {}
+        }
         if (::menuConfigList.isInitialized) refreshMenuConfig()
         if (::shortcutsList.isInitialized) refreshShortcuts()
+    }
+
+    private fun populateVoiceEngines() {
+        voiceValues.clear()
+        voiceLabels.clear()
+
+        // 1. Notune Transcribe (dev.notune.transcribe) sempre disponibile in cima
+        val notuneInstalled = MenuPrefs.isPackageInstalled(this, MenuPrefs.NOTUNE_PKG)
+        voiceValues.add(MenuPrefs.NOTUNE_PREF_KEY)
+        voiceLabels.add(
+            if (notuneInstalled) "Notune Transcribe (dev.notune.transcribe) — Consigliato"
+            else "Notune Transcribe (dev.notune.transcribe) [Non installata]"
+        )
+
+        // 2. Tutte le tastiere vocali (IME) installate sul dispositivo
+        try {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.inputMethodList?.forEach { imi ->
+                if (imi.packageName != packageName && imi.packageName != MenuPrefs.NOTUNE_PKG) {
+                    voiceValues.add("IME_ID:${imi.id}")
+                    voiceLabels.add("[Tastiera / Voce] ${imi.loadLabel(packageManager)} (${imi.packageName})")
+                }
+            }
+        } catch (_: Throwable) {}
+
+        // 3. Servizi di riconoscimento vocale Android standard
+        try {
+            packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0).forEach { ri ->
+                ri.serviceInfo?.let { si ->
+                    val flat = ComponentName(si.packageName, si.name).flattenToString()
+                    voiceValues.add(flat)
+                    voiceLabels.add("[Servizio Vocale] ${ri.loadLabel(packageManager)} (${si.packageName})")
+                }
+            }
+        } catch (_: Throwable) {}
+
+        voiceValues.add("")
+        voiceLabels.add("Predefinito di sistema (Automatico)")
     }
 
     private fun addStyleSliders(
@@ -247,7 +300,7 @@ class MainActivity : Activity() {
         defaultX: Float,
         defaultScale: Float,
         tiltTitle: String,
-        includeArcRotation: Boolean,
+        isArcSection: Boolean,
         density: Float
     ) {
         addSlider(container, "Posizione orizzontale", 0, 100, (MenuPrefs.getFloat(prefs, "${p}x_pct", defaultX) * 100).toInt(), "%") {
@@ -262,15 +315,21 @@ class MainActivity : Activity() {
         addSlider(container, tiltTitle, -90, 90, MenuPrefs.getFloat(prefs, "${p}tilt", 0f).toInt(), "°") {
             prefs.edit().putFloat("${p}tilt", it.toFloat()).apply()
         }
-        if (includeArcRotation) {
+        if (isArcSection) {
             addSlider(container, "Inclinazione tastiera (rotazione)", -180, 180, MenuPrefs.getFloat(prefs, "arc_rotation", 0f).toInt(), "°") {
                 prefs.edit().putFloat("arc_rotation", it.toFloat()).apply()
+            }
+            addSlider(container, "Raggio interno (sposta righe verso l'esterno)", 15, 70, (MenuPrefs.getFloat(prefs, "arc_inner_radius", 0.34f) * 100).toInt(), "%") {
+                prefs.edit().putFloat("arc_inner_radius", it / 100f).apply()
+            }
+            addSlider(container, "Spazio radiale tra le righe", 0, 100, (MenuPrefs.getFloat(prefs, "arc_row_spacing", 0.35f) * 100).toInt(), "%") {
+                prefs.edit().putFloat("arc_row_spacing", it / 100f).apply()
             }
         }
         addSlider(container, "Grandezza delle lettere", 60, 150, (MenuPrefs.getFloat(prefs, "${p}letter_size", 1.0f) * 100).toInt(), "%") {
             prefs.edit().putFloat("${p}letter_size", it / 100f).apply()
         }
-        addSlider(container, "Spazio tra lettere", 0, 100, (MenuPrefs.getFloat(prefs, "${p}key_spacing", 0.25f) * 100).toInt(), "%") {
+        addSlider(container, "Spazio angolare / tra lettere", 0, 100, (MenuPrefs.getFloat(prefs, "${p}key_spacing", 0.25f) * 100).toInt(), "%") {
             prefs.edit().putFloat("${p}key_spacing", it / 100f).apply()
         }
         addSlider(container, "Intensità ombra nera sotto lettere", 0, 100, (MenuPrefs.getFloat(prefs, "${p}shadow_strength", 0.92f) * 100).toInt(), "%") {
@@ -310,25 +369,20 @@ class MainActivity : Activity() {
 
         entries.forEachIndexed { idx, entry ->
             val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 background = GradientDrawable().apply { setColor(Color.parseColor("#121215")); cornerRadius = 10f * density }
                 setPadding((10 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
             }
             val toggle = { MenuPrefs.toggleVisibility(prefs, entry.id); refreshMenuConfig() }
 
             row.addView(TextView(this).apply {
-                text = if (entry.enabled) "☑" else "☐"
-                textSize = 16f
+                text = if (entry.enabled) "☑" else "☐"; textSize = 16f
                 setTextColor(if (entry.enabled) Color.WHITE else Color.parseColor("#6E6E73"))
                 setPadding((4 * density).toInt(), 0, (10 * density).toInt(), 0)
                 setOnClickListener { toggle() }
             })
             row.addView(TextView(this).apply {
-                text = entry.title
-                textSize = 13f
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
+                text = entry.title; textSize = 13f; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
                 setTextColor(if (entry.enabled) Color.WHITE else Color.parseColor("#6E6E73"))
                 setOnClickListener { toggle() }
             }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -391,8 +445,7 @@ class MainActivity : Activity() {
         shortcutsList.removeAllViews()
         MenuPrefs.loadShortcuts(prefs).forEachIndexed { idx, sc ->
             val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 background = GradientDrawable().apply { setColor(Color.parseColor("#121215")); cornerRadius = 10f * density }
                 setPadding((12 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
             }
