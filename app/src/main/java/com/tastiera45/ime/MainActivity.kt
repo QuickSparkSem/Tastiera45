@@ -13,7 +13,6 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
-import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -29,6 +28,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var prefs: SharedPreferences
     private lateinit var menuOrderContainer: LinearLayout
+    private val langButtons = mutableListOf<Pair<String, TextView>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,7 +51,7 @@ class MainActivity : ComponentActivity() {
             setTextColor(Color.WHITE)
         })
         col.addView(TextView(this).apply {
-            text = "Tastiera concentrica flottante • Tasto magico ✦"
+            text = "Tastiera concentrica bilingue (IT + EN) • Tasto magico ✦"
             textSize = 13f
             setTextColor(Color.parseColor("#9E9EA6"))
             setPadding(0, (2 * d).toInt(), 0, (16 * d).toInt())
@@ -89,8 +89,40 @@ class MainActivity : ComponentActivity() {
             }
         })
 
-        // --- SEZIONE 2: TASTIERA CONCENTRICA ---
-        col.addView(sectionTitle("2. Tastiera Concentrica"))
+        // --- SEZIONE 2: LINGUA TASTIERA E SWIPE ---
+        col.addView(sectionTitle("2. Lingua Tastiera & Dizionario Swipe"))
+        val langRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (8 * d).toInt() }
+        }
+        val modes = listOf(
+            "BILINGUAL" to "IT + EN",
+            "IT" to "Italiano",
+            "EN" to "English"
+        )
+        modes.forEachIndexed { idx, (code, label) ->
+            val btn = TextView(this).apply {
+                text = label
+                textSize = 13.5f
+                gravity = Gravity.CENTER
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding((10 * d).toInt(), (11 * d).toInt(), (10 * d).toInt(), (11 * d).toInt())
+                setOnClickListener {
+                    prefs.edit().putString("kb_lang_mode", code).apply()
+                    updateLangButtonsUI()
+                    rebuildMenuOrderList()
+                }
+            }
+            langButtons.add(code to btn)
+            langRow.addView(btn, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                if (idx < modes.lastIndex) rightMargin = (6 * d).toInt()
+            })
+        }
+        col.addView(langRow)
+        updateLangButtonsUI()
+
+        // --- SEZIONE 3: TASTIERA CONCENTRICA ---
+        col.addView(sectionTitle("3. Tastiera Concentrica (Trascinabile su X e Y)"))
 
         col.addView(switchRow(
             title = "Arco a Sinistra (Mano Sinistra)",
@@ -138,8 +170,8 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Posizione tastiera reimpostata", Toast.LENGTH_SHORT).show()
         })
 
-        // --- SEZIONE 3: SCORCIATOIE TESTO NEL MENU ✦ ---
-        col.addView(sectionTitle("3. Aggiungi Scorciatoia Rapida nel Menu ✦"))
+        // --- SEZIONE 4: SCORCIATOIE TESTO NEL MENU ✦ ---
+        col.addView(sectionTitle("4. Aggiungi Scorciatoia Rapida nel Menu ✦"))
         val labelInput = EditText(this).apply {
             hint = "Nome pulsante (es. Email)"
             setTextColor(Color.WHITE)
@@ -168,8 +200,8 @@ class MainActivity : ComponentActivity() {
             }
         })
 
-        // --- SEZIONE 4: ORDINE E VISIBILITÀ MENU ✦ ---
-        col.addView(sectionTitle("4. Ordine e Visibilità Menu ✦"))
+        // --- SEZIONE 5: ORDINE E VISIBILITÀ MENU ✦ ---
+        col.addView(sectionTitle("5. Ordine e Visibilità Menu ✦"))
         menuOrderContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(menuOrderContainer)
         rebuildMenuOrderList()
@@ -179,6 +211,20 @@ class MainActivity : ComponentActivity() {
 
         if (Settings.canDrawOverlays(this)) {
             try { startService(Intent(this, FloatingOrbService::class.java)) } catch (_: Throwable) {}
+        }
+    }
+
+    private fun updateLangButtonsUI() {
+        val d = resources.displayMetrics.density
+        val active = MenuPrefs.getString(prefs, "kb_lang_mode", "BILINGUAL") ?: "BILINGUAL"
+        for ((code, btn) in langButtons) {
+            val isSel = code == active
+            btn.setTextColor(if (isSel) Color.BLACK else Color.WHITE)
+            btn.background = GradientDrawable().apply {
+                setColor(if (isSel) Color.WHITE else Color.parseColor("#1C1C23"))
+                cornerRadius = 10f * d
+                setStroke((1f * d).toInt(), Color.parseColor("#34343E"))
+            }
         }
     }
 
