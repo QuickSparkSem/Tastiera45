@@ -14,7 +14,6 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -32,6 +31,7 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputMethodManager
+import android.view.inputmethod.InputMethodSubtype
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -435,6 +435,54 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
     }
 
+    fun showAndroidImePicker() {
+        try {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                ?.showInputMethodPicker()
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun switchToNotuneVoice() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        if (imm != null) {
+            val notuneImi = imm.enabledInputMethodList.firstOrNull {
+                it.packageName == MenuPrefs.NOTUNE_PKG ||
+                        it.packageName.contains("notune", ignoreCase = true) ||
+                        it.packageName.contains("transcribe", ignoreCase = true)
+            }
+            if (notuneImi != null) {
+                var compactSubtype: InputMethodSubtype? = null
+                for (i in 0 until notuneImi.subtypeCount) {
+                    val st = notuneImi.getSubtypeAt(i)
+                    val label = st.getDisplayName(
+                        this,
+                        notuneImi.packageName,
+                        notuneImi.serviceInfo.applicationInfo
+                    ).toString()
+                    val meta = "${st.mode} ${st.extraValue} $label".lowercase()
+                    if (meta.contains("compact") || meta.contains("compatta") ||
+                        meta.contains("mini") || meta.contains("float") ||
+                        meta.contains("overlay") || meta.contains("pill") || meta.contains("bar")
+                    ) {
+                        compactSubtype = st
+                        break
+                    }
+                }
+                try {
+                    if (compactSubtype != null) {
+                        switchInputMethod(notuneImi.id, compactSubtype)
+                    } else {
+                        switchInputMethod(notuneImi.id)
+                    }
+                    return
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        startVoiceDictation()
+    }
+
     fun replaceLastWordWith(word: String) {
         val ic = currentInputConnection ?: return
         val before = ic.getTextBeforeCursor(40, 0)?.toString().orEmpty()
@@ -485,7 +533,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     // =========================================================================
-    // DETTATURA VOCALE
+    // DETTATURA VOCALE (Fallback integrato)
     // =========================================================================
 
     fun startVoiceDictation() {
@@ -1012,6 +1060,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     private fun executeInternalAction(id: String) {
         when (id) {
+            "PICK_IME" -> showAndroidImePicker()
             "LAUNCH_KB_45" -> setKeyboard45Visible(true)
             "LAUNCH_KB_SAMSUNG" -> switchToSamsungKeyboard()
             "TOGGLE_KB" -> setKeyboard45Visible(!isKeyboardShown())
@@ -1020,7 +1069,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 prefs.edit().putBoolean("kb_arc_mode", nextArc).apply()
                 setKeyboard45Visible(true)
             }
-            "VOICE" -> startVoiceDictation()
+            "VOICE" -> switchToNotuneVoice()
             "MOUSE" -> toggleInternalCursor()
             "CLIPBOARD" -> {
                 isClipboardMode = true
