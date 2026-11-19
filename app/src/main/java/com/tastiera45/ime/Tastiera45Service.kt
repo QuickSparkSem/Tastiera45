@@ -17,6 +17,7 @@ import android.inputmethodservice.InputMethodService
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -31,7 +32,6 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputMethodManager
-import android.view.inputmethod.InputMethodSubtype
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -39,6 +39,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.hypot
+import kotlin.math.sin
 
 class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActionListener {
 
@@ -279,30 +280,30 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         }
         if (::keyboardView.isInitialized) {
             keyboardView.setActionType(action)
+            keyboardView.setIncognito(isIncognito())
         }
         if (::orbView.isInitialized) orbView.invalidate()
+        OrbBridge.overlayService?.refreshPositionAndVisuals()
     }
 
     private fun applyKeyboardStyle() {
         if (!::keyboardView.isInitialized) return
-        val isArc = MenuPrefs.getBool(prefs, "kb_arc_mode", true)
         val isArcLeft = MenuPrefs.getBool(prefs, "kb_arc_left", false)
-        val p = if (isArc) "arc_" else "pop_"
 
         keyboardView.applyStyle(
-            arcMode = isArc,
             arcLeft = isArcLeft,
-            scale = MenuPrefs.getFloat(prefs, "${p}scale", if (isArc) 0.86f else 0.88f),
-            opacity = MenuPrefs.getFloat(prefs, "${p}opacity", 0.0f),
-            tiltDeg = MenuPrefs.getFloat(prefs, "${p}tilt", 0f),
+            scale = MenuPrefs.getFloat(prefs, "arc_scale", 0.86f),
+            opacity = MenuPrefs.getFloat(prefs, "arc_opacity", 0.0f),
+            tiltDeg = MenuPrefs.getFloat(prefs, "arc_tilt", 0f),
             arcRotDeg = MenuPrefs.getFloat(prefs, "arc_rotation", 0f),
             innerRadPct = MenuPrefs.getFloat(prefs, "arc_inner_radius", 0.34f),
             rowSpacing = MenuPrefs.getFloat(prefs, "arc_row_spacing", 0.35f),
-            letterScale = MenuPrefs.getFloat(prefs, "${p}letter_size", 1.0f),
-            spacingScale = MenuPrefs.getFloat(prefs, "${p}key_spacing", 0.25f),
-            shStrength = MenuPrefs.getFloat(prefs, "${p}shadow_strength", 0.92f),
-            shBlur = MenuPrefs.getFloat(prefs, "${p}shadow_blur", 7.0f)
+            letterScale = MenuPrefs.getFloat(prefs, "arc_letter_size", 1.0f),
+            spacingScale = MenuPrefs.getFloat(prefs, "arc_key_spacing", 0.25f),
+            shStrength = MenuPrefs.getFloat(prefs, "arc_shadow_strength", 0.92f),
+            shBlur = MenuPrefs.getFloat(prefs, "arc_shadow_blur", 7.0f)
         )
+        keyboardView.setIncognito(isIncognito())
     }
 
     private fun positionFloatingViews() {
@@ -318,9 +319,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             )
             val kw = keyboardView.measuredWidth
             val kh = keyboardView.measuredHeight
-            val isArc = keyboardView.isArcLayoutMode()
             val isArcLeft = MenuPrefs.getBool(prefs, "kb_arc_left", false)
-            val defaultXPct = if (isArc) (if (isArcLeft) 0.0f else 1.0f) else 0.5f
+            val defaultXPct = if (isArcLeft) 0.0f else 1.0f
             val xPct = MenuPrefs.getFloat(prefs, "kb_x_pct", defaultXPct).coerceIn(0f, 1f)
             val bottomOff = MenuPrefs.getInt(prefs, "kb_bottom_offset", 0)
                 .coerceIn(0, (sh - kh).coerceAtLeast(0))
@@ -407,11 +407,13 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
 
     fun toggleManualIncognito() {
         manualIncognito = !manualIncognito
+        val active = isIncognito()
+        if (::keyboardView.isInitialized) keyboardView.setIncognito(active)
         if (::orbView.isInitialized) orbView.invalidate()
         OrbBridge.overlayService?.refreshPositionAndVisuals()
         Toast.makeText(
             this,
-            if (manualIncognito) "Modalità Incognito attivata" else "Modalità Incognito disattivata",
+            if (active) "Modalità Incognito attivata" else "Modalità Incognito disattivata",
             Toast.LENGTH_SHORT
         ).show()
     }
@@ -431,7 +433,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             }
         }
         if (!switchToNextInputMethod(false)) {
-            try { imm.showInputMethodPicker() } catch (_: Throwable) {}
+            showAndroidImePicker()
         }
     }
 
@@ -440,6 +442,16 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
                 ?.showInputMethodPicker()
         } catch (_: Throwable) {
+            try {
+                startActivity(Intent(this, ImePickerActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                            Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                    )
+                })
+            } catch (_: Throwable) {
+            }
         }
     }
 
@@ -452,32 +464,12 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                         it.packageName.contains("transcribe", ignoreCase = true)
             }
             if (notuneImi != null) {
-                var compactSubtype: InputMethodSubtype? = null
-                for (i in 0 until notuneImi.subtypeCount) {
-                    val st = notuneImi.getSubtypeAt(i)
-                    val label = st.getDisplayName(
-                        this,
-                        notuneImi.packageName,
-                        notuneImi.serviceInfo.applicationInfo
-                    ).toString()
-                    val meta = "${st.mode} ${st.extraValue} $label".lowercase()
-                    if (meta.contains("compact") || meta.contains("compatta") ||
-                        meta.contains("mini") || meta.contains("float") ||
-                        meta.contains("overlay") || meta.contains("pill") || meta.contains("bar")
-                    ) {
-                        compactSubtype = st
-                        break
-                    }
-                }
-                try {
-                    if (compactSubtype != null) {
-                        switchInputMethod(notuneImi.id, compactSubtype)
-                    } else {
-                        switchInputMethod(notuneImi.id)
-                    }
-                    return
-                } catch (_: Throwable) {
-                }
+                MenuPrefs.switchToImeOrPicker(
+                    this,
+                    { it == notuneImi.packageName },
+                    preferCompactSubtype = true
+                )
+                return
             }
         }
         startVoiceDictation()
@@ -682,12 +674,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     override fun onSwitchIme() {
-        if (!switchToNextInputMethod(false)) {
-            try {
-                (getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)?.showInputMethodPicker()
-            } catch (_: Throwable) {
-            }
-        }
+        showAndroidImePicker()
     }
 
     override fun onMoveTextCursor(deltaXSteps: Int, deltaYSteps: Int) {
@@ -794,7 +781,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
     }
 
     // =========================================================================
-    // TASTO MAGICO INTERNO (Fallback quando l'overlay globale è disattivo)
+    // TASTO MAGICO INTERNO (Trascinabile liberamente ovunque su X e Y)
     // =========================================================================
 
     private inner class InternalOrbView(context: Context) : View(context) {
@@ -802,13 +789,15 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         private var downRawY = 0f
         private var startLeft = 0
         private var startBottom = 0
-        private var held = false
-        private var dragged = false
+        private var quickSelectActive = false
+        private var draggingOrb = false
 
         private val holdTask = Runnable {
-            held = true
-            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            openInternalMenu()
+            if (!draggingOrb) {
+                quickSelectActive = true
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                openInternalMenu()
+            }
         }
 
         private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#EE08080A") }
@@ -821,16 +810,26 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             val r = (minOf(width, height) / 2f) - 2f
             if (r <= 0f) return
             val incog = isIncognito()
+            val pulse = if (incog) (0.5f + 0.5f * sin(SystemClock.uptimeMillis() / 320.0)).toFloat() else 0f
+
             border.color = when {
-                isEditingMenu -> Color.parseColor("#D0BCFF")
-                incog -> Color.WHITE
+                draggingOrb || isEditingMenu -> Color.parseColor("#D0BCFF")
+                incog -> Color.argb((170 + pulse * 85).toInt(), 255, 255, 255)
                 else -> Color.parseColor("#606068")
             }
-            border.strokeWidth = if (incog || isEditingMenu) 3.2f else 2.0f
+            border.strokeWidth = when {
+                incog -> 2.6f + pulse * 1.6f
+                draggingOrb || isEditingMenu -> 3.2f
+                else -> 2.0f
+            }
             canvas.drawCircle(cx, cy, r, bg)
             canvas.drawCircle(cx, cy, r, border)
             text.textSize = r * 0.85f
             canvas.drawText("✦", cx, cy - (text.descent() + text.ascent()) / 2f, text)
+
+            if (incog) {
+                postInvalidateOnAnimation()
+            }
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -840,12 +839,20 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX; downRawY = event.rawY
                     startLeft = lp.leftMargin; startBottom = lp.bottomMargin
-                    held = false; dragged = false
+                    quickSelectActive = false
+                    draggingOrb = false
                     performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    if (!isEditingMenu) handler.postDelayed(holdTask, 150L)
+                    handler.postDelayed(holdTask, 260L)
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (isEditingMenu) {
+                    if (!draggingOrb && !quickSelectActive &&
+                        hypot(event.rawX - downRawX, event.rawY - downRawY) > 8f * density
+                    ) {
+                        draggingOrb = true
+                        handler.removeCallbacks(holdTask)
+                        invalidate()
+                    }
+                    if (draggingOrb) {
                         val sw = rootContainer.width.coerceAtLeast(320)
                         val sh = rootContainer.height.coerceAtLeast(320)
                         val maxL = (sw - width).coerceAtLeast(1)
@@ -854,18 +861,15 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                         lp.bottomMargin = (startBottom - (event.rawY - downRawY).toInt()).coerceIn(0, maxB)
                         requestLayout()
                         positionFloatingViews()
-                        return true
+                    } else if (quickSelectActive) {
+                        updateInternalHover(event.rawX, event.rawY)
                     }
-                    if (!dragged && hypot(event.rawX - downRawX, event.rawY - downRawY) > 8f * density) {
-                        dragged = true
-                        handler.removeCallbacks(holdTask)
-                        openInternalMenu()
-                    }
-                    if (dragged || held) updateInternalHover(event.rawX, event.rawY)
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     handler.removeCallbacks(holdTask)
-                    if (isEditingMenu) {
+                    if (draggingOrb) {
+                        draggingOrb = false
+                        invalidate()
                         val sw = rootContainer.width.coerceAtLeast(320)
                         val maxL = (sw - width).coerceAtLeast(1)
                         prefs.edit()
@@ -874,7 +878,8 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
                             .apply()
                         return true
                     }
-                    if (dragged || held) {
+                    if (quickSelectActive) {
+                        quickSelectActive = false
                         updateInternalHover(event.rawX, event.rawY)
                         val chosen = hoveredMenuId
                         closeInternalMenu()
@@ -953,7 +958,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
         val entries = MenuPrefs.getEntries(
             p = prefs,
             isKbVisible = isKeyboardShown(),
-            isArcMode = MenuPrefs.getBool(prefs, "kb_arc_mode", true),
             isListening = isListeningVoice,
             isMouseOpen = remoteCursorOverlay != null,
             isIncognito = isIncognito()
@@ -964,7 +968,7 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             setPadding((8 * density).toInt(), (3 * density).toInt(), (4 * density).toInt(), (5 * density).toInt())
         }
         header.addView(TextView(this).apply {
-            text = if (isEditingMenu) "Modifica / Sposta ✦" else "Menu ✦"
+            text = if (isEditingMenu) "Modifica Menu ✦" else "Menu ✦"
             textSize = 11f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#8E8E93"))
         }, LinearLayout.LayoutParams(0, -2, 1f))
         header.addView(TextView(this).apply {
@@ -1064,11 +1068,6 @@ class Tastiera45Service : InputMethodService(), AngledKeyboardView.KeyboardActio
             "LAUNCH_KB_45" -> setKeyboard45Visible(true)
             "LAUNCH_KB_SAMSUNG" -> switchToSamsungKeyboard()
             "TOGGLE_KB" -> setKeyboard45Visible(!isKeyboardShown())
-            "SWITCH_STYLE" -> {
-                val nextArc = !MenuPrefs.getBool(prefs, "kb_arc_mode", true)
-                prefs.edit().putBoolean("kb_arc_mode", nextArc).apply()
-                setKeyboard45Visible(true)
-            }
             "VOICE" -> switchToNotuneVoice()
             "MOUSE" -> toggleInternalCursor()
             "CLIPBOARD" -> {
