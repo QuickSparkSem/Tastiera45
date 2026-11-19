@@ -488,6 +488,16 @@ class FloatingOrbService : Service() {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
 
         when (id) {
+            "LANG_MODE" -> {
+                if (ime != null) {
+                    ime.cycleLanguageMode()
+                } else {
+                    val cur = MenuPrefs.getString(prefs, "kb_lang_mode", "BILINGUAL") ?: "BILINGUAL"
+                    val next = when (cur) { "BILINGUAL" -> "IT"; "IT" -> "EN"; else -> "BILINGUAL" }
+                    prefs.edit().putString("kb_lang_mode", next).apply()
+                    Toast.makeText(this, "Lingua impostata: $next", Toast.LENGTH_SHORT).show()
+                }
+            }
             "PICK_IME" -> MenuPrefs.openSystemImePicker(this)
             "LAUNCH_KB_45" -> {
                 if (ime != null) {
@@ -576,7 +586,7 @@ class FloatingOrbService : Service() {
     }
 
     fun showSwipeCandidates(candidates: List<String>) {
-        if (candidates.size <= 1) {
+        if (candidates.isEmpty()) {
             removeSwipeWindow()
             return
         }
@@ -633,8 +643,6 @@ class FloatingOrbService : Service() {
         swipeContainer = null
         swipeParams = null
     }
-
-    // --- Puntatore Tondo Minimal + Pad Guida (Tap = Click Sinistro, Doppio Tap = Click Destro) ---
 
     private fun toggleGlobalCursor() {
         val existing = cursorController
