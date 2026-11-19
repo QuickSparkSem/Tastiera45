@@ -38,11 +38,6 @@ object OrbBridge {
     }
 }
 
-/**
- * Activity trasparente dedicata all'apertura del selettore nativo Android
- * dei metodi di immissione da qualsiasi schermata o tastiera (inclusa Samsung).
- * Resta attiva finché l'utente non sceglie una tastiera o chiude la finestra.
- */
 class ImePickerActivity : Activity() {
     private var pickerOpened = false
     private val handler = Handler(Looper.getMainLooper())
@@ -94,6 +89,7 @@ object MenuPrefs {
     private data class DefaultEntry(val id: String, val baseTitle: String, val defaultEnabled: Boolean)
 
     private val defaultEntries = listOf(
+        DefaultEntry("LANG_MODE", "Lingua: IT + EN (Bilingue)", true),
         DefaultEntry("PICK_IME", "Scegli Tastiera (Menu Android)", true),
         DefaultEntry("VOICE", "Dettatura Vocale (Compatta)", true),
         DefaultEntry("LAUNCH_KB_45", "Tastiera 45°", true),
@@ -173,8 +169,6 @@ object MenuPrefs {
             }
         }
 
-        // Se un'altra tastiera (es. Samsung) è attiva, proviamo cambio diretto se permesso ADB presente,
-        // altrimenti apriamo subito il selettore nativo Android tramite ImePickerActivity.
         if (targetImi != null &&
             context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
         ) {
@@ -300,6 +294,7 @@ object MenuPrefs {
 
         val defaultMap = defaultEntries.associateBy { it.id }
         val shortcutMap = shortcuts.associateBy { it.id }
+        val langMode = getString(p, "kb_lang_mode", "BILINGUAL") ?: "BILINGUAL"
 
         return orderedIds.mapNotNull { id ->
             val def = defaultMap[id]
@@ -307,6 +302,11 @@ object MenuPrefs {
             if (def == null && sc == null) return@mapNotNull null
 
             val title = when (id) {
+                "LANG_MODE" -> when (langMode) {
+                    "IT" -> "Lingua: Solo Italiano"
+                    "EN" -> "Lingua: Solo English"
+                    else -> "Lingua: IT + EN (Bilingue)"
+                }
                 "TOGGLE_KB" -> if (isKbVisible) "Nascondi Tastiera" else "Mostra Tastiera"
                 "VOICE" -> if (isListening) "Stop Dettatura" else "Dettatura Vocale (Compatta)"
                 "MOUSE" -> if (isMouseOpen) "Chiudi Cursore" else "Cursore Mouse"
